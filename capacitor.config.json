@@ -1,0 +1,10 @@
+{
+  "appId": "de.galacticsyndicate.game",
+  "appName": "Galactic Syndicate",
+  "webDir": "dist",
+  "backgroundColor": "#05070f",
+  "android": {
+    "backgroundColor": "#05070f",
+    "allowMixedContent": false
+  }
+}

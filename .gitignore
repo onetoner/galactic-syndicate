@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.sync/
+.verify/
+test-results/
+playwright-report/
+*.log
+android/
+*.apk
+assets-src/higgsfield-raw/
+*.blend1
