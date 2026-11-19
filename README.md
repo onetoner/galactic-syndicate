@@ -27,6 +27,28 @@ Unter Windows genügt ein Doppelklick auf **`setup-und-start.bat`** (installiert
 
 `verify.bat` führt Installation, Typecheck, Tests und Build nacheinander aus und schreibt die Ausgaben nach `.verify/`.
 
+## Android-App (APK)
+
+Die APK baut GitHub automatisch (`.github/workflows/android-apk.yml`): bei jedem Push auf `main` laufen Tests und Web-Build,
+dann verpackt [Capacitor](https://capacitorjs.com) das Spiel als Android-App. Die fertige APK liegt unter
+[Releases](https://github.com/onetoner/galactic-syndicate/releases). Auf dem PC wird dafür nur Git gebraucht, kein Android Studio.
+
+| Datei | Zweck |
+|---|---|
+| `github-upload.bat` | Projekt committen und nach GitHub hochladen (löst den APK-Build aus) |
+| `tablet-test.bat` | Test auf einem per USB angeschlossenen Gerät (USB-Debugging): führt die Befehle aus `.tablet/cmds.txt` aus |
+| `scripts/tablet-cdp.mjs` | Gerätetest: steuert die laufende App über die WebView-DevTools (Tippen, Gesten, Layout, Bildrate), Ergebnis in `.tablet/report.txt` |
+| `scripts/android-prepare.mjs` | passt das erzeugte Android-Projekt an: Querformat, Vollbild, Zurück-Taste |
+| `capacitor.config.json`, `resources/` | App-Kennung, Name, Icon und Startbild |
+
+**Bedienung auf Touch-Geräten:** ein Finger schwenkt die Kamera, zwei Finger zoomen, drehen und neigen, Tippen wählt aus oder baut.
+Die Zurück-Taste wirkt wie Esc. Das Layout passt sich an Tablet und Smartphone (Querformat) an.
+
+**Updates ohne Datenverlust:** Alle Builds werden mit demselben Schlüssel signiert (der SHA-256-Fingerabdruck steht in jedem Release).
+Der Schlüssel liegt im Actions-Cache und verfällt, wenn 7 Tage lang kein Build läuft – danach ließe sich die App nur nach
+Deinstallation aktualisieren (Spielstände vorher als Text exportieren). Dauerhaft wird es mit einem Repository-Secret
+`DEBUG_KEYSTORE_BASE64` (Base64 einer Keystore-Datei, Alias `androiddebugkey`, Passwort `android`).
+
 ## Eigene Assets
 
 - **Blender-Modelle** (`.glb`) → `public/assets/models/`
