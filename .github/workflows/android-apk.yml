@@ -65,16 +65,17 @@ jobs:
         run: |
           { npx cap sync android; } 2>&1 | tee -a "$RUNNER_TEMP/build.log"
 
-      # Gleiche Signatur über mehrere Builds hinweg, damit sich die App ohne Deinstallation aktualisieren lässt.
-      # Bevorzugt aus dem Secret DEBUG_KEYSTORE_BASE64, sonst aus dem Actions-Cache (verfällt nach 7 Tagen ohne Build).
+      # Gleiche Signatur über alle Builds hinweg, damit sich die App ohne Deinstallation aktualisieren lässt.
+      # Quelle des Schlüssels: 1. Secret DEBUG_KEYSTORE_BASE64 (dauerhaft), 2. Actions-Cache (verfällt nach
+      # 7 Tagen ohne Build), 3. wird beim allerersten Build neu erzeugt.
       - name: Signatur-Schlüssel aus Secret
         id: keystore_secret
         env:
           DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
-          mkdir -p "$HOME/.android"
+          mkdir -p "$HOME/gs-keystore"
           if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
-            echo "$DEBUG_KEYSTORE_BASE64" | base64 -d > "$HOME/.android/debug.keystore"
+            echo "$DEBUG_KEYSTORE_BASE64" | base64 -d > "$HOME/gs-keystore/app.keystore"
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
@@ -84,14 +85,31 @@ jobs:
         if: steps.keystore_secret.outputs.found != 'true'
         uses: actions/cache@v4
         with:
-          path: ~/.android/debug.keystore
-          key: debug-keystore-v1
+          path: ~/gs-keystore
+          key: gs-keystore-v1
+
+      - name: Signatur-Schlüssel bereitstellen
+        id: keystore
+        run: |
+          KS="$HOME/gs-keystore/app.keystore"
+          if [ ! -s "$KS" ]; then
+            keytool -genkeypair -keystore "$KS" -storepass android -keypass android -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Galactic Syndicate, O=onetoner, C=DE" 2>&1 | tee -a "$RUNNER_TEMP/build.log"
+            echo "Neuer Signatur-Schlüssel erzeugt." | tee -a "$RUNNER_TEMP/build.log"
+          fi
+          FP=$(keytool -list -v -keystore "$KS" -storepass android -alias androiddebugkey 2>/dev/null | grep -m1 "SHA256:" | sed 's/.*SHA256: *//')
+          echo "fingerprint=${FP}" >> "$GITHUB_OUTPUT"
+          echo "Signatur SHA-256: ${FP}" | tee -a "$RUNNER_TEMP/build.log"
 
       - name: APK bauen
         working-directory: android
         run: |
           chmod +x gradlew
-          { ./gradlew --no-daemon assembleDebug; } 2>&1 | tee -a "$RUNNER_TEMP/build.log"
+          { ./gradlew --no-daemon assembleDebug \
+              -Pandroid.injected.signing.store.file="$HOME/gs-keystore/app.keystore" \
+              -Pandroid.injected.signing.store.password=android \
+              -Pandroid.injected.signing.key.alias=androiddebugkey \
+              -Pandroid.injected.signing.key.password=android; } 2>&1 | tee -a "$RUNNER_TEMP/build.log"
 
       - name: APK benennen
         id: apk
@@ -113,7 +131,9 @@ jobs:
         with:
           tag_name: ${{ steps.apk.outputs.tag }}
           name: Galactic Syndicate ${{ steps.apk.outputs.tag }}
-          body: Automatisch gebaute Android-APK (Debug-Signatur, zum direkten Installieren).
+          body: |
+            Automatisch gebaute Android-APK zum direkten Installieren.
+            Signatur SHA-256: ${{ steps.keystore.outputs.fingerprint }}
           files: ${{ steps.apk.outputs.name }}
 
       # Schlägt der Build fehl, landet das Ende des Logs als Issue im Repository.

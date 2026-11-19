@@ -83,6 +83,11 @@ export class ThreeWorldView implements WorldView {
   private width = 0;
   private height = 0;
   private pixelRatio = 1;
+  /** Automatische Entlastung auf Touch-Geräten: 0 = aus, 1 = Schatten aus, 2/3 = zusätzlich geringere Auflösung */
+  private perfStage = 0;
+  private perfTime = 0;
+  private perfFrames = 0;
+  private perfSectorId = -1;
   private disposed = false;
   private antialias = true;
 
@@ -648,6 +653,7 @@ export class ThreeWorldView implements WorldView {
     this.resetTouches();
     this.active()?.onPointerLeave();
     this.mode = mode;
+    this.resetPerformanceStage();
     this.canvas.style.cursor = 'default';
     this.active()?.onEnter();
   }
@@ -658,7 +664,12 @@ export class ThreeWorldView implements WorldView {
 
   setActiveSector(sectorId: string): void {
     const id = Number(sectorId);
-    if (Number.isFinite(id)) this.sector?.setActiveSector(id);
+    if (!Number.isFinite(id)) return;
+    if (id !== this.perfSectorId) {
+      this.perfSectorId = id;
+      this.resetPerformanceStage();
+    }
+    this.sector?.setActiveSector(id);
   }
 
   beginPlacement(buildingType: string): void {
@@ -695,7 +706,7 @@ export class ThreeWorldView implements WorldView {
     const r = this.renderer;
     if (!r) return;
     const g = settings.graphics;
-    const shadows = SHADOW_SIZE[g.shadowQuality] > 0;
+    const shadows = SHADOW_SIZE[g.shadowQuality] > 0 && this.perfStage < 1;
     if (r.shadowMap.enabled !== shadows) {
       r.shadowMap.enabled = shadows;
       // Materialien müssen neu übersetzt werden, wenn Schatten global umgeschaltet werden
@@ -717,7 +728,7 @@ export class ThreeWorldView implements WorldView {
     this.quality.maxShadowMap = coarse ? 1024 : 4096;
     const desktopCap = g.preset === 'low' ? 1 : g.preset === 'medium' ? 1.5 : 2;
     const cap = coarse ? Math.min(desktopCap, g.preset === 'low' ? 1 : 1.5) : desktopCap;
-    const ratio = Math.min(dpr, cap);
+    const ratio = Math.min(dpr, cap) * (this.perfStage >= 3 ? 0.65 : this.perfStage >= 2 ? 0.8 : 1);
     if (ratio !== this.pixelRatio) {
       this.pixelRatio = ratio;
       r.setPixelRatio(ratio);
@@ -733,12 +744,46 @@ export class ThreeWorldView implements WorldView {
     const dt = Math.min(0.1, Math.max(0, Number.isFinite(dtSeconds) ? dtSeconds : 0));
     this.time += dt;
     if (dt > 0) this.fps += (1 / dt - this.fps) * 0.08;
+    this.watchPerformance(dt);
     if (this.canvas.clientWidth !== this.width || this.canvas.clientHeight !== this.height) this.resize();
     const scene = this.active();
     if (!scene) return;
     scene.update(dt, this.time);
     r.setClearColor(0x000000, 0);
     r.render(scene.scene, scene.camera);
+  }
+
+  /**
+   * Touch-Geräte: bleibt die Bildrate über gut zwei Sekunden unter ~33 fps (z. B. voll bebauter 12×12-Sektor),
+   * wird stufenweise entlastet – erst Schatten aus, dann geringere Auflösung. Ein Wechsel der Ansicht oder des
+   * Sektors setzt die Stufe zurück. Am PC (feiner Zeiger) passiert nichts; dort gelten allein die Einstellungen.
+   */
+  private watchPerformance(dt: number): void {
+    if (!this.quality.coarse || this.perfStage >= 3) return;
+    if (dt <= 0 || dt >= 0.1) {
+      // Hänger (App kam aus dem Hintergrund, Shader werden übersetzt): Messfenster neu beginnen
+      this.perfTime = 0;
+      this.perfFrames = 0;
+      return;
+    }
+    this.perfTime += dt;
+    this.perfFrames++;
+    if (this.perfTime < 2.5) return;
+    const avg = this.perfFrames / this.perfTime;
+    this.perfTime = 0;
+    this.perfFrames = 0;
+    if (avg < 33) {
+      this.perfStage++;
+      if (this.settings) this.applySettings(this.settings);
+    }
+  }
+
+  private resetPerformanceStage(): void {
+    this.perfTime = 0;
+    this.perfFrames = 0;
+    if (this.perfStage === 0) return;
+    this.perfStage = 0;
+    if (this.settings) this.applySettings(this.settings);
   }
 
   resize(): void {
