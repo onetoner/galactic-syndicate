@@ -1,7 +1,7 @@
 import type { BuildingType, Game, KVStorage, Result, SettingsStore, ShipDesign, SimSpeed } from '../core';
 import type { AudioApi, SfxName } from '../audio/AudioApi';
 import type { WorldView } from '../graphics/WorldView';
-import { esc } from './dom';
+import { esc, setTouchMode } from './dom';
 import { installImageFallback } from './icons';
 import { morphHtml } from './morph';
 import { createActions } from './actions';
@@ -12,8 +12,10 @@ import { renderLeft, renderRight } from './views/panels';
 
 export type LeftPanel = 'build' | 'market' | 'fleet' | 'systems' | 'syndicates';
 export type GameView = 'sector' | 'planet' | 'galaxy';
-export type MenuDialog = null | 'new' | 'load' | 'settings' | 'credits';
-export type PauseDialog = null | 'save' | 'load' | 'settings';
+export type MenuDialog = null | 'new' | 'load' | 'settings' | 'credits' | 'import-text';
+export type PauseDialog = null | 'save' | 'load' | 'settings' | 'export-text' | 'import-text';
+/** Geräteklasse nach wirksamer Fenstergröße: Smartphone-Querformat, Tablet/kleines Fenster, Desktop */
+export type DeviceClass = 'phone' | 'tablet' | 'desktop';
 export type SettingsTab = 'graphics' | 'audio' | 'controls' | 'gameplay';
 export type ToastKind = 'info' | 'good' | 'warn' | 'bad';
 
@@ -40,6 +42,8 @@ export interface UiState {
   settingsTab: SettingsTab;
   view: GameView;
   leftPanel: LeftPanel | null;
+  /** Smartphone: rechte Spalte (Raster/Inspektor, Sektoren, System) als Sheet eingeblendet */
+  rightOpen: boolean;
   marketTab: 'buy' | 'inventory';
   fleetTab: 'yard' | 'ships' | 'routes';
   synTab: 'ranking' | 'systems' | 'stats';
@@ -76,6 +80,16 @@ export interface UiDeps {
 }
 
 const UI_PREFS_KEY = 'gs.ui';
+
+/** Mindest-Arbeitsfläche (in UI-Pixeln), auf die das Layout ausgelegt ist – die wirksame UI-Skalierung wird darauf begrenzt. */
+const MIN_PHONE = { w: 720, h: 350 };
+const MIN_WIDE = { w: 940, h: 600 };
+
+function isTextEntry(el: Element | null): boolean {
+  if (!el) return false;
+  if (el instanceof HTMLTextAreaElement) return true;
+  return el instanceof HTMLInputElement && el.type !== 'range' && el.type !== 'checkbox' && el.type !== 'file';
+}
 const REGIONS = ['menu', 'topbar', 'nav', 'left', 'right', 'bottom', 'toasts', 'modal'] as const;
 type Region = (typeof REGIONS)[number];
 
@@ -99,6 +113,18 @@ export class Ui {
   escConsumedAt = -1e9;
   /** weich hochgezählter Kontostand für die Anzeige */
   creditsShown = 0;
+  /** Geräteklasse (bestimmt das Layout) */
+  device: DeviceClass = 'desktop';
+  /** grober Zeiger (Finger) als Haupteingabe */
+  coarse = false;
+  /** Touch-Bedienung: grober Zeiger oder Capacitor-Hülle */
+  touchMode = false;
+  /** tatsächlich angewandte UI-Skalierung (Einstellung, begrenzt auf die Bildschirmgröße) */
+  effScale = 1;
+  /** zwischengespeicherter Export-Text für den Dialog „Spielstand als Text" */
+  exportText = '';
+  /** wird nach jedem Rendern aufgerufen (Verdrahtung: Zurück-Taste) */
+  afterRender: (() => void) | null = null;
 
   private regions = {} as Record<Region, HTMLElement>;
   private lastHtml = {} as Record<Region, string>;
@@ -111,6 +137,15 @@ export class Ui {
   private toastId = 1;
   private lastGoodToast = 0;
   private fileInput!: HTMLInputElement;
+  private deviceReady = false;
+  private lastTouchAt = -1e9;
+  private pressTimer: ReturnType<typeof setTimeout> | null = null;
+  private tipHideTimer: ReturnType<typeof setTimeout> | null = null;
+  private pressX = 0;
+  private pressY = 0;
+  private pressStart = 0;
+  private pressEl: HTMLElement | null = null;
+  private suppressClickUntil = 0;
 
   constructor(deps: UiDeps) {
     this.root = deps.root;
@@ -130,6 +165,7 @@ export class Ui {
       settingsTab: 'graphics',
       view: 'sector',
       leftPanel: null,
+      rightOpen: false,
       marketTab: 'buy',
       fleetTab: 'yard',
       synTab: 'ranking',
@@ -153,6 +189,7 @@ export class Ui {
       worldNotice: !deps.worldAvailable,
     };
     this.loadPrefs();
+    this.updateDevice(true);
     this.actions = createActions(this);
     this.buildDom();
     this.bindDom();
@@ -186,21 +223,60 @@ export class Ui {
     this.fileInput.dataset.testid = 'import-file';
     this.root.appendChild(this.fileInput);
     installImageFallback(this.root);
+
+    // Hinweis für kleine Geräte im Hochformat (per CSS-Media-Query eingeblendet; die APK ist im Querformat gesperrt)
+    if (!document.querySelector('.rotate-hint')) {
+      const rot = document.createElement('div');
+      rot.className = 'rotate-hint';
+      rot.dataset.testid = 'rotate-hint';
+      rot.setAttribute('role', 'alert');
+      rot.innerHTML =
+        `<svg viewBox="0 0 64 64" aria-hidden="true"><rect x="20" y="8" width="24" height="48" rx="5" fill="none" stroke="currentColor" stroke-width="3"/>` +
+        `<path d="M10 38a24 24 0 0 0 16 20M54 26A24 24 0 0 0 38 6" fill="none" stroke="#35e0ff" stroke-width="3" stroke-linecap="round"/><path d="M22 60l5-2-3-5M42 4l-5 2 3 5" fill="none" stroke="#35e0ff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>` +
+        `<b>Bitte Gerät drehen</b><span>Galactic Syndicate wird im Querformat gespielt.</span>`;
+      document.body.appendChild(rot);
+    }
   }
 
   private bindDom(): void {
     const root = this.root;
 
     root.addEventListener('click', (ev) => {
-      const el = (ev.target as HTMLElement | null)?.closest?.('[data-action]') as HTMLElement | null;
-      if (!el || el.tagName === 'SELECT' || (el.tagName === 'INPUT' && (el as HTMLInputElement).type !== 'checkbox')) return;
-      if (el.getAttribute('aria-disabled') === 'true' || (el as HTMLButtonElement).disabled) return;
+      const target = ev.target as HTMLElement | null;
+      const byTouch = performance.now() - this.lastTouchAt < 900;
+      // Loslassen nach „gedrückt halten" (Info anzeigen) löst die Aktion nicht aus
+      if (performance.now() < this.suppressClickUntil) {
+        this.suppressClickUntil = 0;
+        ev.preventDefault();
+        return;
+      }
+      const el = target?.closest?.('[data-action]') as HTMLElement | null;
+      if (!el) {
+        // Touch: Antippen eines erklärten, nicht klickbaren Elements zeigt dessen Info
+        const tipEl = byTouch ? (target?.closest?.('[data-tip]') as HTMLElement | null) : null;
+        if (tipEl) this.showTipFor(tipEl, 2800);
+        return;
+      }
+      if (el.tagName === 'SELECT' || el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && (el as HTMLInputElement).type !== 'checkbox')) return;
+      if (el.getAttribute('aria-disabled') === 'true' || (el as HTMLButtonElement).disabled) {
+        // Touch: deaktivierter Button erklärt per Antippen, warum er gesperrt ist
+        if (byTouch && el.dataset.tip) {
+          this.showTipFor(el, 2800);
+          this.sfx('ui_error');
+        }
+        return;
+      }
       void this.audio.unlock();
       this.dispatch(el);
     });
 
+    // Touch: kein Kontextmenü/Text-Callout bei langem Druck auf UI-Elemente
+    root.addEventListener('contextmenu', (ev) => {
+      if (!isTextEntry(ev.target as Element | null) && (this.touchMode || performance.now() - this.lastTouchAt < 1500)) ev.preventDefault();
+    });
+
     root.addEventListener('input', (ev) => {
-      const el = ev.target as HTMLInputElement | HTMLSelectElement;
+      const el = ev.target as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
       if (el.dataset.bind) this.form[el.dataset.bind] = el.value;
       // Regler wirken sofort (ohne Neuaufbau, damit das Ziehen nicht abbricht)
       if (el instanceof HTMLInputElement && el.type === 'range' && el.dataset.action) {
@@ -229,10 +305,46 @@ export class Ui {
       }
     });
 
-    root.addEventListener('pointerdown', () => {
+    root.addEventListener('pointerdown', (ev) => {
       this.pointerDown = true;
+      // neue Geste: eine noch offene Klick-Sperre aus dem vorigen „gedrückt halten" gilt nicht mehr
+      this.suppressClickUntil = 0;
+      if (ev.pointerType === 'touch' || ev.pointerType === 'pen') {
+        this.lastTouchAt = performance.now();
+        this.hideTip();
+        // Gedrückt halten zeigt die Info eines Elements (Ersatz für Hover-Tooltips)
+        const tipEl = (ev.target as HTMLElement | null)?.closest?.('[data-tip]') as HTMLElement | null;
+        this.clearPress();
+        if (tipEl) {
+          this.pressX = ev.clientX;
+          this.pressY = ev.clientY;
+          this.pressStart = ev.timeStamp;
+          this.pressEl = tipEl;
+          this.pressTimer = setTimeout(() => {
+            this.pressTimer = null;
+            if (!tipEl.isConnected) return;
+            this.suppressClickUntil = performance.now() + 1500;
+            this.showTipFor(tipEl, 3200);
+          }, 480);
+        }
+      }
     }, true);
-    const up = (): void => {
+    root.addEventListener('pointermove', (ev) => {
+      if (this.pressTimer && Math.hypot(ev.clientX - this.pressX, ev.clientY - this.pressY) > 10) this.clearPress();
+    }, true);
+    const up = (ev?: Event): void => {
+      // Ruckelt das Gerät, kann der Halte-Timer noch ausstehen, obwohl lange genug gedrückt wurde:
+      // dann zählt die gemessene Haltedauer (Zeitstempel der Ereignisse), nicht der Timer.
+      const held = this.pressTimer !== null && this.pressEl !== null && ev instanceof PointerEvent && ev.type === 'pointerup' && ev.timeStamp - this.pressStart >= 480;
+      if (held && this.pressEl && this.pressEl.isConnected) {
+        this.suppressClickUntil = performance.now() + 1500;
+        this.showTipFor(this.pressEl, 3200);
+      }
+      this.pressEl = null;
+      this.clearPress();
+      // nach dem Loslassen bleibt die Sperre nur kurz bestehen (das zugehörige click-Ereignis folgt sofort)
+      // (großzügig bemessen: auf langsamen Geräten kommt der Klick spürbar verzögert; die nächste Geste hebt die Sperre auf)
+      if (this.suppressClickUntil > 0) this.suppressClickUntil = performance.now() + 1500;
       if (this.pointerDown) {
         this.pointerDown = false;
         this.invalidate();
@@ -240,19 +352,24 @@ export class Ui {
     };
     window.addEventListener('pointerup', up, true);
     window.addEventListener('pointercancel', up, true);
-    window.addEventListener('blur', up);
+    window.addEventListener('blur', () => up());
 
     root.addEventListener('mouseover', (ev) => {
+      // nach einem Tap erzeugt der Browser Maus-Ereignisse -> sonst blieben Tooltips „hängen"
+      if (performance.now() - this.lastTouchAt < 1200) return;
       const el = (ev.target as HTMLElement | null)?.closest?.('[data-tip]') as HTMLElement | null;
       if (el === this.tipTarget) return;
       this.tipTarget = el;
       this.showTooltip();
     });
     root.addEventListener('mouseleave', () => {
+      // per Touch angezeigte Infos laufen über ihren eigenen Timer ab
+      if (this.tipHideTimer || performance.now() - this.lastTouchAt < 1200) return;
       this.tipTarget = null;
       this.showTooltip();
     });
     root.addEventListener('focusin', (ev) => {
+      if (performance.now() - this.lastTouchAt < 1200) return;
       const el = (ev.target as HTMLElement | null)?.closest?.('[data-tip]') as HTMLElement | null;
       if (el) {
         this.tipTarget = el;
@@ -260,8 +377,12 @@ export class Ui {
       }
     });
     root.addEventListener('focusout', () => {
-      this.tipTarget = null;
-      this.showTooltip();
+      if (!this.tipHideTimer) {
+        this.tipTarget = null;
+        this.showTooltip();
+      }
+      // Bildschirmtastatur zu: Layout neu einmessen (während der Eingabe bleibt es eingefroren)
+      if (this.coarse) setTimeout(() => this.applyUiScale(), 350);
     });
 
     this.fileInput.addEventListener('change', () => {
@@ -357,6 +478,11 @@ export class Ui {
     this.root.dataset.view = s.view;
     this.root.dataset.left = s.screen === 'game' && s.leftPanel ? s.leftPanel : '';
     this.root.dataset.banner = s.screen === 'game' && (this.banners.length > 0 || s.encounterResult) ? '1' : '';
+    const phone = this.device === 'phone';
+    const rightSheet = phone && s.screen === 'game' && s.rightOpen;
+    this.root.dataset.right = rightSheet ? '1' : '';
+    this.root.dataset.sheet = phone && s.screen === 'game' && (rightSheet || s.leftPanel) ? '1' : '';
+    this.root.dataset.mode = s.screen === 'game' && (s.placing || s.demolish) ? '1' : '';
     document.body.dataset.screen = s.screen;
 
     if (s.screen === 'menu') {
@@ -372,10 +498,8 @@ export class Ui {
     }
     this.setRegion('toasts', renderToasts(this));
     this.setRegion('modal', renderModal(this));
-    if (this.tipTarget && !this.tipTarget.isConnected) {
-      this.tipTarget = null;
-      this.showTooltip();
-    }
+    if (this.tipTarget && !this.tipTarget.isConnected) this.hideTip();
+    if (this.afterRender) this.afterRender();
   }
 
   private setRegion(name: Region, html: string): void {
@@ -435,9 +559,10 @@ export class Ui {
       this.tooltip.hidden = true;
       return;
     }
-    this.tooltip.textContent = tip;
+    // Touch: Tastenkürzel-Hinweise wie „(Esc)" oder „(R)" am Ende des Hinweises weglassen
+    this.tooltip.textContent = this.coarse ? tip.replace(/\s*\((?:Esc|Leertaste|Tab|Enter|[A-Z]|[0-9])\)\s*$/u, '') : tip;
     this.tooltip.hidden = false;
-    const scale = this.settings.get().gameplay.uiScale || 1;
+    const scale = this.effScale || 1;
     const r = t.getBoundingClientRect();
     const rootR = this.root.getBoundingClientRect();
     const tw = this.tooltip.offsetWidth;
@@ -452,10 +577,75 @@ export class Ui {
     this.tooltip.style.top = `${Math.round(Math.max(8, y))}px`;
   }
 
+  private clearPress(): void {
+    if (this.pressTimer) {
+      clearTimeout(this.pressTimer);
+      this.pressTimer = null;
+    }
+  }
+
+  private hideTip(): void {
+    if (this.tipHideTimer) {
+      clearTimeout(this.tipHideTimer);
+      this.tipHideTimer = null;
+    }
+    if (this.tipTarget) {
+      this.tipTarget = null;
+      this.showTooltip();
+    }
+  }
+
+  /** Info-Text eines Elements zeitlich begrenzt anzeigen (Touch-Ersatz für Hover). */
+  private showTipFor(el: HTMLElement, ms: number): void {
+    this.hideTip();
+    this.tipTarget = el;
+    this.showTooltip();
+    this.tipHideTimer = setTimeout(() => {
+      this.tipHideTimer = null;
+      this.tipTarget = null;
+      this.showTooltip();
+    }, ms);
+  }
+
+  /**
+   * Geräteklasse und wirksame UI-Skalierung bestimmen. Das Layout ist auf eine Mindest-Arbeitsfläche ausgelegt;
+   * ist der Bildschirm kleiner als „Mindestfläche × eingestellte Skalierung", wird die Skalierung begrenzt.
+   * @param force auch bei geöffneter Bildschirmtastatur neu einmessen
+   */
+  updateDevice(force = false): void {
+    const w = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1280);
+    const h = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 720);
+    const mm = typeof window.matchMedia === 'function';
+    this.coarse = mm && window.matchMedia('(pointer: coarse)').matches;
+    this.touchMode = this.coarse || 'Capacitor' in window;
+    setTouchMode(this.touchMode);
+    // Bildschirmtastatur offen: der Viewport schrumpft nur vorübergehend -> Layout nicht umklassifizieren
+    if (!force && this.deviceReady && this.coarse && isTextEntry(document.activeElement)) return;
+    this.deviceReady = true;
+
+    const phone = h <= 500 || w < 700;
+    const min = phone ? MIN_PHONE : MIN_WIDE;
+    const user = this.settings.get().gameplay.uiScale || 1;
+    const fit = Math.min(w / min.w, h / min.h);
+    const scale = Math.round(Math.max(0.4, Math.min(user, fit)) * 1000) / 1000;
+    const effW = w / scale;
+    const effH = h / scale;
+    const device: DeviceClass = phone ? 'phone' : effW < 1280 || effH < 820 ? 'tablet' : 'desktop';
+    if (device !== this.device || scale !== this.effScale) this.dirty = true;
+    this.device = device;
+    this.effScale = scale;
+  }
+
+  /** UI-Skalierung (Einstellung 80–130 %, begrenzt auf die Bildschirmgröße) und Geräteklasse anwenden. */
   applyUiScale(): void {
-    const scale = this.settings.get().gameplay.uiScale;
-    this.root.style.setProperty('--ui-scale', String(scale));
-    this.root.style.setProperty('zoom', String(scale));
+    this.updateDevice();
+    const root = this.root;
+    root.style.setProperty('--ui-scale', String(this.effScale));
+    root.style.setProperty('zoom', String(this.effScale));
+    root.dataset.device = this.device;
+    root.dataset.coarse = this.coarse ? '1' : '';
+    root.dataset.touch = this.touchMode ? '1' : '';
+    document.body.dataset.device = this.device;
   }
 
   // ---------------------------------------------------------------- Meldungen
@@ -510,9 +700,31 @@ export class Ui {
       s.leftPanel = null;
     } else {
       s.leftPanel = panel;
+      // Smartphone: immer nur ein Sheet gleichzeitig
+      if (this.device === 'phone') s.rightOpen = false;
       this.sfx('ui_open');
     }
     if (s.leftPanel !== 'build') this.cancelModes();
+    this.invalidate();
+  }
+
+  /** Smartphone: rechte Spalte (Raster/Inspektor, Sektoren, System) ein-/ausblenden. */
+  toggleRight(open?: boolean): void {
+    const s = this.s;
+    const next = open ?? !s.rightOpen;
+    if (next === s.rightOpen) return;
+    s.rightOpen = next;
+    if (!next && this.device === 'phone' && s.view === 'sector' && (s.selectedBuildingId !== null || s.selectedTile)) {
+      // Sheet zu: Auswahl aufheben (im Smartphone-Sheet gibt es keinen eigenen Inspektor-Schließen-Knopf)
+      s.selectedBuildingId = null;
+      s.selectedTile = null;
+      this.world.setSelectedBuilding(null);
+    }
+    if (next && this.device === 'phone' && s.leftPanel) {
+      // linkes Sheet schließen, ohne einen laufenden Bau-Modus abzubrechen (Platzieren über die Rasterkarte)
+      s.leftPanel = null;
+    }
+    this.sfx(next ? 'ui_open' : 'ui_close');
     this.invalidate();
   }
 
@@ -523,9 +735,15 @@ export class Ui {
     s.view = view;
     this.world.setMode(view);
     if (view === 'sector') this.world.setActiveSector(String(this.game.state.activeSectorId));
-    if (view === 'galaxy' && (s.leftPanel === 'build' || s.leftPanel === null)) s.leftPanel = 'systems';
-    if (view === 'sector' && s.leftPanel === 'systems') s.leftPanel = null;
-    if (view === 'planet' && (s.leftPanel === 'build' || s.leftPanel === 'systems')) s.leftPanel = null;
+    if (this.device === 'phone') {
+      // Smartphone: beim Ansichtswechsel die 3D-Welt freigeben; nur die Planeten-Übersicht öffnet ihr Sektoren-Sheet
+      s.leftPanel = null;
+      s.rightOpen = view === 'planet';
+    } else {
+      if (view === 'galaxy' && (s.leftPanel === 'build' || s.leftPanel === null)) s.leftPanel = 'systems';
+      if (view === 'sector' && s.leftPanel === 'systems') s.leftPanel = null;
+      if (view === 'planet' && (s.leftPanel === 'build' || s.leftPanel === 'systems')) s.leftPanel = null;
+    }
     this.updateMood();
     this.sfx('ui_toggle');
     this.invalidate();
@@ -544,6 +762,18 @@ export class Ui {
     s.placing = type;
     s.placeRot = 0;
     if (s.view !== 'sector') this.setView('sector');
+    if (this.device === 'phone' && this.worldAvailable) {
+      // Smartphone: Sheets schließen, damit das Raster in der 3D-Welt antippbar ist (Buttons unten: Drehen/Abbrechen)
+      s.leftPanel = null;
+      s.rightOpen = false;
+    } else if (this.device === 'phone') {
+      // ohne 3D-Welt wird über die Rasterkarte platziert
+      s.leftPanel = null;
+      s.rightOpen = true;
+    } else if (this.coarse && this.device === 'tablet') {
+      // Touch-Tablet: Bau-Panel schließen, damit die 3D-Welt zum Antippen frei ist (Bau-Leiste unten: Gebäude wechseln/Drehen/Abbrechen)
+      s.leftPanel = null;
+    }
     this.world.beginPlacement(type);
     this.invalidate();
   }
@@ -556,6 +786,12 @@ export class Ui {
     }
     s.demolish = on;
     this.world.setDemolishMode(on);
+    if (on && this.device === 'phone') {
+      s.leftPanel = null;
+      s.rightOpen = !this.worldAvailable;
+    } else if (on && this.coarse && this.device === 'tablet') {
+      s.leftPanel = null;
+    }
     this.invalidate();
   }
 
@@ -581,6 +817,11 @@ export class Ui {
     this.s.selectedBuildingId = id;
     if (tile !== undefined) this.s.selectedTile = tile;
     this.world.setSelectedBuilding(id === null ? null : String(id));
+    // Smartphone: Auswahl öffnet den Inspektor als Sheet
+    if (this.device === 'phone' && (id !== null || tile) && this.s.view === 'sector' && !this.s.rightOpen) {
+      this.s.rightOpen = true;
+      this.s.leftPanel = null;
+    }
     this.invalidate();
   }
 
@@ -588,7 +829,42 @@ export class Ui {
     this.s.selectedSystemId = id;
     this.world.setSelectedSystem(id);
     if (id && focusCamera) this.world.focusSystem(id);
+    // Smartphone: gewähltes System erscheint als Sheet (die Systemliste weicht)
+    if (this.device === 'phone' && this.s.view === 'galaxy') {
+      if (id) {
+        this.s.rightOpen = true;
+        this.s.leftPanel = null;
+      } else this.s.rightOpen = false;
+    }
     this.invalidate();
+  }
+
+  /**
+   * „Zurück": Esc-Taste am PC, Zurück-Taste unter Android. Schließt schrittweise Dialog, Bau-/Abriss-Modus,
+   * Auswahl und Panels und öffnet zuletzt das Pausemenü.
+   * @returns false, wenn es nichts zu schließen gab (Hauptmenü ohne Dialog)
+   */
+  escape(): boolean {
+    const s = this.s;
+    if (s.confirm) this.act('confirm-no');
+    else if (s.screen === 'menu') {
+      if (!s.menuDialog) return false;
+      this.act('dialog-close');
+    } else if (s.pauseOpen) {
+      if (s.pauseDialog) this.act('dialog-close');
+      else this.setPause(false);
+    } else if (this.game.state.pendingEncounters.length > 0) {
+      /* Kontrolle verlangt eine Entscheidung */
+    } else if (this.cancelModes()) {
+      /* Bau-/Abriss-Modus beendet */
+    } else if (this.device === 'phone' && s.rightOpen) {
+      if (s.selectedBuildingId !== null || s.selectedTile) this.selectBuilding(null, null);
+      this.toggleRight(false);
+    } else if (s.selectedBuildingId !== null || s.selectedTile) this.selectBuilding(null, null);
+    else if (s.view === 'galaxy' && s.selectedSystemId) this.selectSystem(null, false);
+    else if (s.leftPanel) this.openPanel(null);
+    else this.setPause(true);
+    return true;
   }
 
   /** Bau-Vorschau um 90° drehen. callWorld=false, wenn die 3D-Welt die Taste selbst verarbeitet hat. */
@@ -653,6 +929,7 @@ export class Ui {
     s.pauseOpen = false;
     s.pauseDialog = null;
     s.view = 'sector';
+    s.rightOpen = false;
     s.leftPanel = this.game.state.stats.totalRevenue === 0 && this.game.state.tick < 40 ? 'build' : null;
     s.placing = null;
     s.demolish = false;
@@ -686,6 +963,7 @@ export class Ui {
     s.pauseOpen = false;
     s.pauseDialog = null;
     s.leftPanel = null;
+    s.rightOpen = false;
     this.world.attachGame(null);
     this.world.setMode('menu');
     this.updateMood();
@@ -730,15 +1008,113 @@ export class Ui {
     this.fileInput.click();
   }
 
-  importText(text: string): void {
+  /** @returns true, wenn der Spielstand übernommen wurde */
+  importText(text: string): boolean {
     const r = this.game.importSave(text);
-    if (!this.run(r)) return;
+    if (!this.run(r)) return false;
     this.toast('good', 'Spielstand importiert.');
     if (this.s.screen === 'menu') this.enterGame();
     else {
       this.s.pauseOpen = false;
       this.s.pauseDialog = null;
       this.onStateReplaced();
+    }
+    return true;
+  }
+
+  /** Dialog „Spielstand als Text" (WebView/Touch: Datei-Download ist dort unzuverlässig). */
+  openExportText(): void {
+    try {
+      this.exportText = this.game.exportSave();
+    } catch {
+      this.toast('bad', 'Export fehlgeschlagen.');
+      return;
+    }
+    this.s.pauseDialog = 'export-text';
+    this.sfx('ui_open');
+    this.invalidate();
+  }
+
+  openImportText(): void {
+    this.form['import.text'] = '';
+    if (this.s.screen === 'menu') this.s.menuDialog = 'import-text';
+    else this.s.pauseDialog = 'import-text';
+    this.sfx('ui_open');
+    this.invalidate();
+  }
+
+  copyExportText(): void {
+    const text = this.exportText;
+    const done = (): void => this.toast('good', 'Spielstand in die Zwischenablage kopiert.');
+    const fallback = (): void => {
+      const ta = this.root.querySelector<HTMLTextAreaElement>('[data-testid="export-textarea"]');
+      let ok = false;
+      if (ta) {
+        ta.focus();
+        ta.select();
+        try {
+          ok = document.execCommand('copy');
+        } catch {
+          ok = false;
+        }
+      }
+      if (ok) done();
+      else this.toast('warn', 'Kopieren nicht möglich – bitte den Text markieren und selbst kopieren.');
+    };
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') navigator.clipboard.writeText(text).then(done, fallback);
+      else fallback();
+    } catch {
+      fallback();
+    }
+  }
+
+  canShare(): boolean {
+    return typeof (navigator as Navigator & { share?: unknown }).share === 'function';
+  }
+
+  shareExportText(): void {
+    const nav = navigator as Navigator & { share?: (d: { title?: string; text?: string }) => Promise<void> };
+    if (typeof nav.share !== 'function') {
+      this.copyExportText();
+      return;
+    }
+    nav.share({ title: `Galactic Syndicate – ${this.game.state.syndicateName}`, text: this.exportText }).catch(() => {
+      /* abgebrochen oder nicht erlaubt – kein Fehler */
+    });
+  }
+
+  pasteImportText(): void {
+    const set = (t: string): void => {
+      this.form['import.text'] = t;
+      const ta = this.root.querySelector<HTMLTextAreaElement>('[data-testid="import-textarea"]');
+      if (ta) ta.value = t;
+      this.invalidate();
+    };
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
+        navigator.clipboard.readText().then(set, () => this.toast('warn', 'Zwischenablage nicht lesbar – bitte den Text von Hand einfügen.'));
+        return;
+      }
+    } catch {
+      /* unten */
+    }
+    this.toast('warn', 'Zwischenablage nicht lesbar – bitte den Text von Hand einfügen.');
+  }
+
+  importFromTextDialog(): void {
+    const ta = this.root.querySelector<HTMLTextAreaElement>('[data-testid="import-textarea"]');
+    const text = (ta ? ta.value : (this.form['import.text'] ?? '')).trim();
+    if (!text) {
+      this.toast('warn', 'Bitte zuerst den Spielstand-Text einfügen.');
+      this.sfx('ui_error');
+      return;
+    }
+    if (this.importText(text)) {
+      // Erfolg: Dialog schließen und Feld leeren
+      this.form['import.text'] = '';
+      if (this.s.menuDialog === 'import-text') this.s.menuDialog = null;
+      if (this.s.pauseDialog === 'import-text') this.s.pauseDialog = null;
     }
   }
 

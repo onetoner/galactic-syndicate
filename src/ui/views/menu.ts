@@ -46,7 +46,21 @@ export function loadBody(ui: Ui): string {
     : `<li class="empty">Noch keine Spielstände vorhanden.</li>`;
   return (
     `<ul class="slots scroll" data-scroll="slots" data-testid="slot-list">${rows}</ul>` +
-    `<div class="dlg-foot">${btn({ label: 'JSON importieren …', action: 'import-pick', cls: 'btn-ghost', tip: 'Einen exportierten Spielstand (.json) laden' })}<span class="spacer"></span>${btn({ label: 'Schließen', action: 'dialog-close', cls: 'btn-ghost', testid: 'load-close' })}</div>`
+    `<div class="dlg-foot">${btn({ label: 'JSON importieren …', action: 'import-pick', cls: 'btn-ghost', tip: 'Einen exportierten Spielstand (.json) laden' })}` +
+    (ui.touchMode ? btn({ label: 'Aus Text …', action: 'import-text-open', cls: 'btn-ghost', tip: 'Einen kopierten Spielstand einfügen' }) : '') +
+    `<span class="spacer"></span>${btn({ label: 'Schließen', action: 'dialog-close', cls: 'btn-ghost', testid: 'load-close' })}</div>`
+  );
+}
+
+/** Import per Einfügen (WebView/Touch: der Datei-Dialog ist dort unzuverlässig). */
+export function importTextBody(ui: Ui): string {
+  return (
+    `<p class="hint">Füge hier den Text eines exportierten Spielstands ein („Spielstand als Text" im Pausemenü oder der Inhalt einer exportierten JSON-Datei).</p>` +
+    `<textarea class="inp txt-save" data-bind="import.text" data-testid="import-textarea" aria-label="Spielstand-Text" placeholder="Spielstand-Text hier einfügen …" spellcheck="false" autocapitalize="off" autocomplete="off">${esc(ui.form['import.text'] ?? '')}</textarea>` +
+    `<div class="dlg-foot">${btn({ label: 'Abbrechen', action: 'dialog-close', cls: 'btn-ghost', testid: 'import-text-cancel' })}<span class="spacer"></span>` +
+    btn({ label: 'Einfügen', action: 'text-paste', tip: 'Text aus der Zwischenablage einfügen' }) +
+    btn({ label: 'Importieren', action: 'text-import', cls: 'btn-primary' }) +
+    `</div>`
   );
 }
 
@@ -75,6 +89,7 @@ export function renderMenu(ui: Ui): string {
   else if (d === 'load') dlg = dialog('Spielstand laden', loadBody(ui), 'dialog-load', true);
   else if (d === 'settings') dlg = dialog('Einstellungen', settingsBody(ui), 'dialog-settings', true);
   else if (d === 'credits') dlg = dialog('Credits', creditsBody(ui), 'dialog-credits');
+  else if (d === 'import-text') dlg = dialog('Spielstand aus Text importieren', importTextBody(ui), 'dialog-import-text', true);
 
   return (
     `<div class="menu${d ? ' has-dialog' : ''}" data-testid="main-menu">` +

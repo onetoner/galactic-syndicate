@@ -79,21 +79,37 @@ const KEYS: [string, string][] = [
   ['Tab', 'Ansicht wechseln'],
 ];
 
-function controls(s: Settings): string {
+const GESTURES: [string, string][] = [
+  ['Antippen', 'Auswählen / Bauen'],
+  ['Ein Finger ziehen', 'Kamera bewegen'],
+  ['Zwei Finger spreizen', 'Zoomen'],
+  ['Gedrückt halten', 'Info zu einem Button anzeigen'],
+  ['„Drehen" / „Abbrechen"', 'Buttons unten im Bau-Modus'],
+  ['Zurück-Taste', 'Modus/Panel schließen, Pausemenü'],
+  ['Leiste oben rechts', 'Pause und Tempo 1× / 2× / 4×'],
+  ['Leiste links', 'Bauen, Markt, Flotte, Systeme, Syndikate'],
+];
+
+function controls(s: Settings, coarse: boolean): string {
   const c = s.controls;
+  const list = coarse
+    ? `<div class="keys keys-touch" data-testid="touch-gestures"><h4>Touch-Bedienung</h4><dl>${GESTURES.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl></div>`
+    : `<div class="keys" data-testid="key-list"><h4>Tastenübersicht</h4><dl>${KEYS.map(([k, v]) => `<div><dt><kbd>${esc(k)}</kbd></dt><dd>${esc(v)}</dd></div>`).join('')}</dl></div>`;
   return (
     row('Kamera-Geschwindigkeit', slider('controls.cameraSpeed', c.cameraSpeed, 0.25, 3, 0.05, 'x', 'Kamera-Geschwindigkeit')) +
     row('Zoom-Empfindlichkeit', slider('controls.zoomSensitivity', c.zoomSensitivity, 0.25, 3, 0.05, 'x', 'Zoom-Empfindlichkeit')) +
-    row('Edge-Scrolling', toggle('controls.edgeScrolling', c.edgeScrolling), 'Kamera bewegt sich, wenn der Mauszeiger den Bildrand berührt.') +
-    row('Maus invertieren', toggle('controls.invertMouse', c.invertMouse), 'Kehrt die Drehrichtung der Kamera um.') +
-    `<div class="keys"><h4>Tastenübersicht</h4><dl>${KEYS.map(([k, v]) => `<div><dt><kbd>${esc(k)}</kbd></dt><dd>${esc(v)}</dd></div>`).join('')}</dl></div>`
+    // Edge-Scrolling braucht einen Mauszeiger – bei Touch-Bedienung ausgeblendet
+    (coarse ? '' : row('Edge-Scrolling', toggle('controls.edgeScrolling', c.edgeScrolling), 'Kamera bewegt sich, wenn der Mauszeiger den Bildrand berührt.')) +
+    row(coarse ? 'Drehrichtung invertieren' : 'Maus invertieren', toggle('controls.invertMouse', c.invertMouse), 'Kehrt die Drehrichtung der Kamera um.') +
+    list
   );
 }
 
-function gameplay(s: Settings): string {
+function gameplay(s: Settings, ui: Ui): string {
   const g = s.gameplay;
+  const limited = ui.effScale < g.uiScale - 0.004;
   return (
-    row('UI-Skalierung', slider('gameplay.uiScale', g.uiScale, 0.8, 1.3, 0.05, 'pct', 'UI-Skalierung'), '80 % bis 130 %') +
+    row('UI-Skalierung', slider('gameplay.uiScale', g.uiScale, 0.8, 1.3, 0.05, 'pct', 'UI-Skalierung'), limited ? `80 % bis 130 % – auf diesem Bildschirm auf ${Math.round(ui.effScale * 100)} % begrenzt` : '80 % bis 130 %') +
     row('Auto-Save', seg('gameplay.autosaveMinutes', g.autosaveMinutes, AUTOSAVE_OPTIONS.map((v) => ({ value: v, label: v === 0 ? 'Aus' : `${v} min` }))), 'Speichert automatisch in den Slot „Autosave".') +
     row('Simulations-Geschwindigkeit', seg('gameplay.simSpeed', g.simSpeed, SIM_SPEEDS.map((v) => ({ value: v, label: v === 0 ? 'Pause' : `${v}×` }))))
   );
@@ -104,7 +120,7 @@ export function settingsBody(ui: Ui): string {
   const s = ui.settings.get();
   const tab = ui.s.settingsTab;
   const tabs = TABS.map((t) => btn({ label: t.label, action: 'settings-tab', data: { tab: t.id }, active: tab === t.id, cls: 'tab' })).join('');
-  const body = tab === 'graphics' ? graphics(s) : tab === 'audio' ? audio(s) : tab === 'controls' ? controls(s) : gameplay(s);
+  const body = tab === 'graphics' ? graphics(s) : tab === 'audio' ? audio(s) : tab === 'controls' ? controls(s, ui.coarse) : gameplay(s, ui);
   return (
     `<div class="tabs" role="tablist">${tabs}</div>` +
     `<div class="set-body scroll" data-scroll="settings" data-testid="settings-body">${body}</div>` +

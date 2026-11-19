@@ -24,7 +24,8 @@ export function buildPanel(ui: Ui): string {
     })
     .join('');
   const body =
-    `<p class="hint">Gebäude wählen, dann ein freies Feld anklicken – in der 3D-Welt oder in der Rasterkarte rechts. Rechtsklick oder <kbd>Esc</kbd> beendet den Bau-Modus.</p>` +
+    `<p class="hint"><span class="fine-only">Gebäude wählen, dann ein freies Feld anklicken – in der 3D-Welt oder in der Rasterkarte rechts. Rechtsklick oder <kbd>Esc</kbd> beendet den Bau-Modus.</span>` +
+    `<span class="coarse-only">Gebäude wählen, dann ein freies Feld antippen – in der 3D-Welt oder in der Rasterkarte. „Abbrechen" beendet den Bau-Modus.</span></p>` +
     `<div class="build-list">${items}</div>` +
     `<div class="row">${btn({ label: s.demolish ? 'Abriss-Modus beenden' : 'Abriss-Modus', action: 'demolish-toggle', cls: `btn-danger${s.demolish ? ' is-active' : ''}`, active: s.demolish, tip: 'Gebäude anklicken, um sie abzureißen (50 % Erstattung).' })}</div>`;
   return panel('Bauen', body, 'panel-build');
@@ -103,16 +104,16 @@ export function sectorCard(ui: Ui): string {
     .join('');
 
   const mode = s.placing
-    ? `<p class="mini-mode">Bau-Modus: <b>${esc(BUILDINGS[s.placing].name)}</b> – freies Feld anklicken</p>`
+    ? `<p class="mini-mode">Bau-Modus: <b>${esc(BUILDINGS[s.placing].name)}</b> – freies Feld <span class="fine-only">anklicken</span><span class="coarse-only">antippen</span></p>`
     : s.demolish
-      ? `<p class="mini-mode is-danger">Abriss-Modus – Gebäude anklicken</p>`
+      ? `<p class="mini-mode is-danger">Abriss-Modus – Gebäude <span class="fine-only">anklicken</span><span class="coarse-only">antippen</span></p>`
       : '';
 
   const body =
     switcher +
     `<div class="mini-meta"><span>${esc(def.name)} · ${sector.w}×${sector.h}</span><span>${sector.buildings.length} Gebäude</span></div>` +
     mode +
-    `<div class="minimap${s.placing ? ' is-placing' : ''}${s.demolish ? ' is-demolish' : ''}" style="--cols:${sector.w}" data-testid="minimap" role="grid" aria-label="Bauraster">${cells}</div>` +
+    `<div class="minimap-wrap" data-scroll="minimap"><div class="minimap${s.placing ? ' is-placing' : ''}${s.demolish ? ' is-demolish' : ''}" style="--cols:${sector.w}" data-testid="minimap" role="grid" aria-label="Bauraster">${cells}</div></div>` +
     `<div class="bulk">` +
     btn({ label: `Alle gießen${thirsty ? ` (${thirsty})` : ''}`, action: 'bulk-water', cls: 'btn-sm', disabled: pots.length === 0, tip: 'Gießt alle bepflanzten Töpfe in diesem Sektor.' }) +
     btn({ label: `Reife ernten${ripe ? ` (${ripe})` : ''}`, action: 'bulk-harvest', cls: `btn-sm${ripe ? ' btn-primary' : ''}`, disabled: ripe === 0, tip: 'Erntet alle erntereifen Pflanzen.' }) +

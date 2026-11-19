@@ -100,6 +100,13 @@ export function createActions(ui: Ui): ActionMap {
     },
     'import-pick': () => ui.pickImportFile(),
     'export-save': () => ui.exportDownload(),
+    // Spielstand als Text (WebView/Touch): kopieren, teilen, einfügen
+    'export-text-open': () => ui.openExportText(),
+    'import-text-open': () => ui.openImportText(),
+    'text-copy': () => ui.copyExportText(),
+    'text-share': () => ui.shareExportText(),
+    'text-paste': () => ui.pasteImportText(),
+    'text-import': () => ui.importFromTextDialog(),
 
     // ------------------------------------------------------------ Bestätigungen / Meldungen
     'confirm-yes': () => {
@@ -151,6 +158,17 @@ export function createActions(ui: Ui): ActionMap {
     view: (d) => ui.setView((d.view as GameView) ?? 'sector'),
     nav: (d) => ui.openPanel((d.panel as LeftPanel) ?? null),
     'panel-close': () => ui.openPanel(null),
+    'right-toggle': () => ui.toggleRight(),
+    'right-close': () => ui.toggleRight(false),
+    'build-open': () => {
+      // Bau-Modus: anderes Gebäude wählen
+      if (s.view !== 'sector') ui.setView('sector');
+      if (s.leftPanel !== 'build') {
+        s.leftPanel = 'build';
+        if (ui.device === 'phone') s.rightOpen = false;
+        ui.sfx('ui_open');
+      }
+    },
     speed: (d) => setSpeed(int(d.speed, 1) as SimSpeed),
     'pause-open': () => ui.setPause(true),
     'pause-close': () => ui.setPause(false),

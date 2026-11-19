@@ -47,8 +47,18 @@ export interface BtnOpts {
   html?: boolean;
 }
 
+let touchMode = false;
+
+/**
+ * Touch-Bedienung: deaktivierte Buttons behalten nur `aria-disabled` (kein `disabled`-Attribut),
+ * damit ein Antippen den Hinweis zeigen kann, warum die Aktion gerade nicht möglich ist.
+ */
+export function setTouchMode(on: boolean): void {
+  touchMode = on;
+}
+
 export function btn(o: BtnOpts): string {
-  const cls = `btn ${o.cls ?? ''}${o.active ? ' is-active' : ''}`.trim();
+  const cls = `btn ${o.cls ?? ''}${o.active ? ' is-active' : ''}${o.disabled && touchMode ? ' is-disabled' : ''}`.trim();
   return `<button type="button"${attrs({
     class: cls,
     'data-action': o.action,
@@ -57,7 +67,7 @@ export function btn(o: BtnOpts): string {
     'data-tip': o.tip,
     'aria-pressed': o.active === undefined ? undefined : String(o.active),
     'aria-disabled': o.disabled ? 'true' : undefined,
-    disabled: o.disabled,
+    disabled: o.disabled && !touchMode,
   })}>${o.html ? o.label : esc(o.label)}</button>`;
 }
 
@@ -86,7 +96,11 @@ export function input(o: InputOpts): string {
     'data-bind': o.bind,
     'data-testid': o.testid ?? `input-${o.bind.replace(/[^A-Za-z0-9_-]+/g, '_')}`,
     'aria-label': o.label ?? o.placeholder,
+    // Bildschirmtastatur: Ziffernblock für Zahlen, „Fertig" statt Zeilenumbruch
+    inputmode: o.type === 'number' ? 'numeric' : undefined,
+    enterkeyhint: 'done',
     autocomplete: 'off',
+    autocapitalize: 'off',
     spellcheck: 'false',
   })}>`;
 }

@@ -3,7 +3,7 @@ import { BUILDINGS, SOL_ID, STRAINS, growthStage } from '../core';
 import type { Building, BuildingType, Game, Sector, SectorType, Settings } from '../core';
 import { OrbitRig } from './CameraRig';
 import { ParticleSystem } from './Particles';
-import type { PointerInfo, SceneContext, SceneController } from './SceneBase';
+import type { GestureInfo, PointerInfo, SceneContext, SceneController } from './SceneBase';
 import { Disposer, forEachMesh, makeCanvas, makeStripeTexture, makeWarningTexture, mulberry, overrideMaterial } from './util';
 
 interface Visual {
@@ -121,6 +121,10 @@ export class SectorScene implements SceneController {
   private pointerNx = 0;
   private pointerNy = 0;
   private pointerInside = false;
+  /** letzter Zeiger war ein Finger (kein Hover, kein tileHover) */
+  private pointerTouch = false;
+  private hoverEmitted = false;
+  private prev = { x: 0, y: 0 };
   private placementType: BuildingType | null = null;
   private placementRot = 0;
   private placementValid = false;
@@ -314,12 +318,14 @@ export class SectorScene implements SceneController {
     this.fog.far = this.viewDistance * 0.95;
     this.rig.maxDistance = Math.min(60, Math.max(24, this.viewDistance * 0.3));
     const p = settings.graphics.particles;
-    this.particleLevel = p === 'high' ? 1 : p === 'low' ? 0.45 : 0;
-    this.particles.setCapacity(p === 'high' ? 1400 : p === 'low' ? 450 : 0);
+    // Touch-Geräte: ThreeWorldView begrenzt Partikelmenge und Schattenkarte über ctx.quality
+    const ql = this.ctx.quality;
+    this.particleLevel = (p === 'high' ? 1 : p === 'low' ? 0.45 : 0) * ql.particleScale;
+    this.particles.setCapacity(Math.round((p === 'high' ? 1400 : p === 'low' ? 450 : 0) * ql.particleScale));
     const q = settings.graphics.shadowQuality;
     this.shadowsOn = q !== 'off';
     this.sun.castShadow = this.shadowsOn;
-    const size = q === 'high' ? 4096 : q === 'medium' ? 2048 : 1024;
+    const size = Math.min(ql.maxShadowMap, q === 'high' ? 4096 : q === 'medium' ? 2048 : 1024);
     if (this.sun.shadow.mapSize.x !== size) {
       this.sun.shadow.mapSize.set(size, size);
       if (this.sun.shadow.map) {
@@ -1061,8 +1067,19 @@ export class SectorScene implements SceneController {
       this.hoverY = ty;
       this.hoverBuilding = bid;
       this.placementCheckTimer = 0;
-      if (tx === HOVER_NONE) this.ctx.emit('tileHover', null);
-      else this.ctx.emit('tileHover', { sectorId: String(s.id), x: tx, y: ty, buildingId: bid === null ? null : String(bid) });
+      // Finger haben keinen Hover: tileHover kommt nur von der Maus (ein zuvor gemeldetes Feld wird einmal abgemeldet)
+      if (this.pointerTouch) {
+        if (this.hoverEmitted) {
+          this.hoverEmitted = false;
+          this.ctx.emit('tileHover', null);
+        }
+      } else if (tx === HOVER_NONE) {
+        this.hoverEmitted = false;
+        this.ctx.emit('tileHover', null);
+      } else {
+        this.hoverEmitted = true;
+        this.ctx.emit('tileHover', { sectorId: String(s.id), x: tx, y: ty, buildingId: bid === null ? null : String(bid) });
+      }
       this.ctx.setCursor(this.demolishMode && bid !== null ? 'crosshair' : this.placementType ? 'copy' : bid !== null ? 'pointer' : 'default');
     }
   }
@@ -1071,7 +1088,17 @@ export class SectorScene implements SceneController {
     this.pointerNx = p.nx;
     this.pointerNy = p.ny;
     this.pointerInside = inside;
+    this.pointerTouch = p.touch;
     this.pointerDirty = true;
+  }
+
+  /** vorherige Zeigerposition in normalisierten Gerätekoordinaten (aus dem Pixel-Delta) */
+  private prevNdc(p: PointerInfo): { x: number; y: number } {
+    const w = Math.max(1, this.ctx.input.width);
+    const h = Math.max(1, this.ctx.input.height);
+    this.prev.x = p.nx - (p.dx / w) * 2;
+    this.prev.y = p.ny + (p.dy / h) * 2;
+    return this.prev;
   }
 
   onPointerDown(p: PointerInfo): void {
@@ -1079,6 +1106,13 @@ export class SectorScene implements SceneController {
   }
 
   onPointerMove(p: PointerInfo): void {
+    if (p.touch) {
+      // ein Finger zieht: Kamera schwenken – der Bodenpunkt unter dem Finger bleibt unter dem Finger
+      const q = this.prevNdc(p);
+      this.rig.touchPan(q.x, q.y, p.nx, p.ny, p.dx, p.dy);
+      this.setPointer(p, true);
+      return;
+    }
     if (p.buttons & 6) {
       this.rig.rotate(p.dx, p.dy);
       return;
@@ -1086,8 +1120,35 @@ export class SectorScene implements SceneController {
     this.setPointer(p, true);
   }
 
+  /** zwei Finger: Pinch = Zoom, Twist = Drehen, gemeinsames Schieben = Schwenken; paralleles senkrechtes Schieben = Neigen */
+  onGesture(g: GestureInfo): void {
+    if (g.tilt !== 0) {
+      this.rig.touchRotate(0, g.tilt * 0.006);
+    } else {
+      this.rig.touchPan(g.prevNx, g.prevNy, g.nx, g.ny, g.dx, g.dy);
+      this.rig.touchZoomRotateAt(g.scale, g.rotation, g.nx, g.ny);
+    }
+    // während der Geste keine Vorschau/kein Hover unter den Fingern
+    this.pointerInside = false;
+    this.pointerTouch = true;
+    this.pointerDirty = true;
+  }
+
+  onContextRestored(): void {
+    this.pointerDirty = true;
+  }
+
   onPointerUp(p: PointerInfo): void {
     this.setPointer(p, true);
+    this.handleClick(p);
+    // Finger weg: kein Hover-Rest. Im Bau-Modus bleibt die Vorschau auf dem zuletzt berührten Feld stehen.
+    if (p.touch && !this.placementType) {
+      this.pointerInside = false;
+      this.pointerDirty = true;
+    }
+  }
+
+  private handleClick(p: PointerInfo): void {
     if (!p.isClick) return;
     const s = this.sector();
     if (!s) return;

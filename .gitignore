@@ -9,3 +9,4 @@ android/
 *.apk
 assets-src/higgsfield-raw/
 *.blend1
+.tablet/

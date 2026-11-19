@@ -8,7 +8,7 @@ import { EarthFactory } from './Earth';
 import { GalaxyScene } from './GalaxyScene';
 import { MenuScene } from './MenuScene';
 import { PlanetScene } from './PlanetScene';
-import type { PointerInfo, SceneContext, SceneController } from './SceneBase';
+import type { GestureInfo, PointerInfo, QualityLimits, SceneContext, SceneController } from './SceneBase';
 import { SectorScene } from './SectorScene';
 import type { AssetReport, FrameStats, ViewMode, WorldView, WorldViewEventName, WorldViewEvents } from './WorldView';
 import { isTypingTarget, makeGlowTexture, makeRingTexture } from './util';
@@ -16,6 +16,35 @@ import { isTypingTarget, makeGlowTexture, makeRingTexture } from './util';
 type AnyListener = (payload: unknown) => void;
 
 const SHADOW_SIZE: Record<Settings['graphics']['shadowQuality'], number> = { off: 0, low: 1024, medium: 2048, high: 4096 };
+
+/** Touch: ab dieser Fingerbewegung (CSS-Pixel) ist es kein Tippen mehr */
+const TAP_MAX_MOVE = 12;
+/** Touch: längeres Halten ist kein Tippen */
+const TAP_MAX_MS = 400;
+/** Zwei-Finger-Geste: Weg, nach dem zwischen Neigen und Zoomen/Drehen entschieden wird */
+const GESTURE_DECIDE_PX = 10;
+
+interface TouchPoint {
+  x: number;
+  y: number;
+  startX: number;
+  startY: number;
+}
+
+const wrapAngle = (a: number): number => {
+  let v = a;
+  while (v > Math.PI) v -= Math.PI * 2;
+  while (v < -Math.PI) v += Math.PI * 2;
+  return v;
+};
+
+function isCoarsePointer(): boolean {
+  try {
+    return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Three.js-Implementierung der Spielwelt.
@@ -25,6 +54,9 @@ const SHADOW_SIZE: Record<Settings['graphics']['shadowQuality'], number> = { off
  * Hinweis Anti-Aliasing: MSAA ist ein Kontext-Attribut und lässt sich auf einem bestehenden Canvas
  * nicht umschalten. Der Wert wird beim Start aus den gespeicherten Einstellungen gelesen;
  * eine Änderung wird beim nächsten Laden der Seite wirksam.
+ *
+ * Eingabe: Maus/Tastatur (PC) und Multi-Touch (Tablet/Smartphone) über Pointer-Events.
+ * Finger: einer zieht = schwenken/drehen, zwei = Zoom + Drehen (oder Neigen), Tippen = Klick.
  */
 export class ThreeWorldView implements WorldView {
   private renderer: THREE.WebGLRenderer | null = null;
@@ -61,7 +93,27 @@ export class ThreeWorldView implements WorldView {
   private moved = 0;
   private lastX = 0;
   private lastY = 0;
-  private pointerInfo: PointerInfo = { px: 0, py: 0, nx: 0, ny: 0, button: -1, buttons: 0, dx: 0, dy: 0, isClick: false };
+  private pointerInfo: PointerInfo = { px: 0, py: 0, nx: 0, ny: 0, button: -1, buttons: 0, dx: 0, dy: 0, isClick: false, touch: false };
+
+  // Touch-Verfolgung (höchstens zwei Finger werden ausgewertet)
+  private touches = new Map<number, TouchPoint>();
+  private touchStartTime = 0;
+  private touchMoved = 0;
+  /** ein zweiter Finger war beteiligt ⇒ das Loslassen ist kein Tippen */
+  private touchTainted = false;
+  private touchDragging = false;
+  private gestureDecided = false;
+  private gestureTilt = false;
+  private gPrevCx = 0;
+  private gPrevCy = 0;
+  private gPrevDist = 1;
+  private gPrevAngle = 0;
+  private gStartDist = 1;
+  private gStartAngle = 0;
+  private gestureInfo: GestureInfo = { cx: 0, cy: 0, nx: 0, ny: 0, prevNx: 0, prevNy: 0, dx: 0, dy: 0, scale: 1, rotation: 0, tilt: 0 };
+
+  private quality: QualityLimits = { particleScale: 1, maxShadowMap: 4096, coarse: false };
+  private contextLost = false;
 
   constructor(private canvas: HTMLCanvasElement) {}
 
@@ -84,18 +136,18 @@ export class ThreeWorldView implements WorldView {
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.setClearColor(0x000000, 0);
 
+    // Touch: der Browser darf weder scrollen/zoomen noch Text markieren oder ein Long-Press-Menü zeigen
+    const st = this.canvas.style;
+    st.touchAction = 'none';
+    st.userSelect = 'none';
+    st.setProperty('-webkit-user-select', 'none');
+    st.setProperty('-webkit-touch-callout', 'none');
+    st.setProperty('-webkit-tap-highlight-color', 'transparent');
+
     this.glowTexture = makeGlowTexture();
     this.ringTexture = makeRingTexture();
 
-    // weiche Umgebungsbeleuchtung, damit Metall-Materialien der Modelle nicht schwarz wirken
-    try {
-      const pmrem = new THREE.PMREMGenerator(renderer);
-      const room = new RoomEnvironment();
-      this.envTexture = pmrem.fromScene(room, 0.04).texture;
-      pmrem.dispose();
-    } catch {
-      this.envTexture = null;
-    }
+    this.buildEnvironment();
 
     const ctx: SceneContext = {
       assets: this.assets,
@@ -103,6 +155,7 @@ export class ThreeWorldView implements WorldView {
       input: this.input,
       glowTexture: this.glowTexture,
       ringTexture: this.ringTexture,
+      quality: this.quality,
       emit: (event, payload) => this.emit(event, payload),
       setCursor: (cursor) => {
         this.canvas.style.cursor = cursor;
@@ -112,12 +165,7 @@ export class ThreeWorldView implements WorldView {
     this.sector = new SectorScene(ctx);
     this.planet = new PlanetScene(ctx);
     this.galaxy = new GalaxyScene(ctx);
-    if (this.envTexture) {
-      for (const s of this.scenes()) {
-        s.scene.environment = this.envTexture;
-        s.scene.environmentIntensity = s === this.sector ? 0.55 : 0.4;
-      }
-    }
+    this.assignEnvironment();
 
     this.assets.onStatus = () => this.emit('assetStatus', this.assets.getReport());
     // Laden läuft im Hintergrund; bis dahin stehen Platzhalter bereit
@@ -128,6 +176,29 @@ export class ThreeWorldView implements WorldView {
     this.resize();
     for (const s of this.scenes()) s.setGame(this.game);
     this.active()?.onEnter();
+  }
+
+  /** weiche Umgebungsbeleuchtung, damit Metall-Materialien der Modelle nicht schwarz wirken */
+  private buildEnvironment(): void {
+    const r = this.renderer;
+    if (!r) return;
+    const old = this.envTexture;
+    try {
+      const pmrem = new THREE.PMREMGenerator(r);
+      const room = new RoomEnvironment();
+      this.envTexture = pmrem.fromScene(room, 0.04).texture;
+      pmrem.dispose();
+    } catch {
+      this.envTexture = null;
+    }
+    if (old && old !== this.envTexture) old.dispose();
+  }
+
+  private assignEnvironment(): void {
+    for (const s of this.scenes()) {
+      s.scene.environment = this.envTexture;
+      s.scene.environmentIntensity = s === this.sector ? 0.55 : 0.4;
+    }
   }
 
   private readStoredAntialias(): boolean {
@@ -178,6 +249,10 @@ export class ThreeWorldView implements WorldView {
     };
 
     on(c, 'pointerdown', (e) => {
+      if (e.pointerType === 'touch') {
+        this.touchStart(e);
+        return;
+      }
       const p = this.info(e);
       this.downX = p.px;
       this.downY = p.py;
@@ -191,11 +266,19 @@ export class ThreeWorldView implements WorldView {
       this.active()?.onPointerDown(p);
     });
     on(c, 'pointermove', (e) => {
+      if (e.pointerType === 'touch') {
+        this.touchMove(e);
+        return;
+      }
       const p = this.info(e);
       if (this.downButton >= 0) this.moved = Math.max(this.moved, Math.hypot(p.px - this.downX, p.py - this.downY));
       this.active()?.onPointerMove(p);
     });
     on(c, 'pointerup', (e) => {
+      if (e.pointerType === 'touch') {
+        this.touchEnd(e, false);
+        return;
+      }
       const p = this.info(e);
       p.isClick = this.downButton === e.button && this.moved < 6;
       this.downButton = -1;
@@ -206,14 +289,20 @@ export class ThreeWorldView implements WorldView {
       }
       this.active()?.onPointerUp(p);
     });
-    on(c, 'pointercancel', () => {
+    on(c, 'pointercancel', (e) => {
+      if (e.pointerType === 'touch') {
+        this.touchEnd(e, true);
+        return;
+      }
       this.downButton = -1;
     });
-    on(c, 'pointerleave', () => {
+    on(c, 'pointerleave', (e) => {
+      if (e.pointerType === 'touch') return; // Finger: Ende kommt über pointerup/pointercancel
       this.input.inside = false;
       if (this.downButton < 0) this.active()?.onPointerLeave();
     });
     on(c, 'pointerenter', (e) => {
+      if (e.pointerType === 'touch') return; // kein Edge-Scrolling bei Touch
       // Position sofort übernehmen – sonst scrollt die Kamera per Edge-Scrolling von (0,0) aus los,
       // bis die Maus sich das erste Mal bewegt.
       const rect = this.canvas.getBoundingClientRect();
@@ -229,6 +318,17 @@ export class ThreeWorldView implements WorldView {
       this.active()?.onWheel(delta);
     }, { passive: false });
     on(c, 'contextmenu', (e) => e.preventDefault());
+    // Long-Press/Drag-Start des Browsers unterdrücken (Android-WebView)
+    on(c, 'dragstart', (e) => e.preventDefault());
+    on(c, 'selectstart', (e) => e.preventDefault());
+
+    // WebGL-Kontextverlust (Android-WebViews verwerfen den Kontext, wenn die App im Hintergrund war)
+    c.addEventListener('webglcontextlost', this.onContextLost, false);
+    c.addEventListener('webglcontextrestored', this.onContextRestored, false);
+    this.domOffs.push(() => {
+      c.removeEventListener('webglcontextlost', this.onContextLost, false);
+      c.removeEventListener('webglcontextrestored', this.onContextRestored, false);
+    });
 
     onWin('keydown', (e) => {
       if (isTypingTarget()) return;
@@ -245,7 +345,254 @@ export class ThreeWorldView implements WorldView {
       this.downButton = -1;
     });
     onWin('resize', () => this.resize());
+    onWin('orientationchange', () => this.resize());
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    if (vv) {
+      const fn = (): void => this.resize();
+      vv.addEventListener('resize', fn);
+      this.domOffs.push(() => vv.removeEventListener('resize', fn));
+    }
   }
+
+  // ------------------------------------------------------------------ Touch
+
+  /** Füllt pointerInfo für einen Finger. Edge-Scrolling bleibt aus (input.inside = false). */
+  private touchInfo(x: number, y: number, dx: number, dy: number, button: number, buttons: number): PointerInfo {
+    const rect = this.canvas.getBoundingClientRect();
+    const w = Math.max(1, rect.width);
+    const h = Math.max(1, rect.height);
+    const p = this.pointerInfo;
+    p.px = x;
+    p.py = y;
+    p.nx = (x / w) * 2 - 1;
+    p.ny = -(y / h) * 2 + 1;
+    p.dx = dx;
+    p.dy = dy;
+    p.button = button;
+    p.buttons = buttons;
+    p.isClick = false;
+    p.touch = true;
+    this.lastX = x;
+    this.lastY = y;
+    this.input.px = x;
+    this.input.py = y;
+    this.input.inside = false;
+    this.input.width = w;
+    this.input.height = h;
+    return p;
+  }
+
+  private touchPos(e: PointerEvent): { x: number; y: number } {
+    const rect = this.canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  private twoFingers(): [TouchPoint, TouchPoint] | null {
+    if (this.touches.size < 2) return null;
+    const it = this.touches.values();
+    const a = it.next().value;
+    const b = it.next().value;
+    return a && b ? [a, b] : null;
+  }
+
+  private touchStart(e: PointerEvent): void {
+    e.preventDefault();
+    if (this.touches.size >= 2 || this.touches.has(e.pointerId)) return; // dritter Finger wird ignoriert
+    const { x, y } = this.touchPos(e);
+    try {
+      this.canvas.setPointerCapture(e.pointerId);
+    } catch {
+      /* nicht kritisch */
+    }
+    this.touches.set(e.pointerId, { x, y, startX: x, startY: y });
+    if (this.touches.size === 1) {
+      this.touchStartTime = performance.now();
+      this.touchMoved = 0;
+      this.touchTainted = false;
+      this.touchDragging = false;
+      this.active()?.onPointerDown(this.touchInfo(x, y, 0, 0, 0, 1));
+      return;
+    }
+    // zweiter Finger: Geste beginnt, ein späteres Loslassen ist kein Tippen mehr
+    this.touchTainted = true;
+    const pair = this.twoFingers();
+    if (!pair) return;
+    const [a, b] = pair;
+    a.startX = a.x;
+    a.startY = a.y;
+    this.gPrevCx = (a.x + b.x) / 2;
+    this.gPrevCy = (a.y + b.y) / 2;
+    this.gPrevDist = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
+    this.gPrevAngle = Math.atan2(b.y - a.y, b.x - a.x);
+    this.gStartDist = this.gPrevDist;
+    this.gStartAngle = this.gPrevAngle;
+    this.gestureDecided = false;
+    this.gestureTilt = false;
+  }
+
+  private touchMove(e: PointerEvent): void {
+    const t = this.touches.get(e.pointerId);
+    if (!t) return;
+    e.preventDefault();
+    const { x, y } = this.touchPos(e);
+    const dx = x - t.x;
+    const dy = y - t.y;
+    if (dx === 0 && dy === 0) return;
+    t.x = x;
+    t.y = y;
+
+    if (this.touches.size === 1) {
+      this.touchMoved = Math.max(this.touchMoved, Math.hypot(x - t.startX, y - t.startY));
+      // erst nach Überschreiten der Tipp-Schwelle ziehen – sonst wackelt die Kamera bei jedem Tippen
+      if (this.touchMoved < TAP_MAX_MOVE && !this.touchTainted) {
+        this.touchInfo(x, y, 0, 0, -1, 1);
+        return;
+      }
+      if (!this.touchDragging) {
+        // erster Zieh-Schritt holt den Weg innerhalb der Tipp-Schwelle nach: der Punkt unter dem Finger bleibt verankert
+        this.touchDragging = true;
+        this.active()?.onPointerMove(this.touchInfo(x, y, x - t.startX, y - t.startY, -1, 1));
+        return;
+      }
+      this.active()?.onPointerMove(this.touchInfo(x, y, dx, dy, -1, 1));
+      return;
+    }
+
+    const pair = this.twoFingers();
+    if (!pair) return;
+    const [a, b] = pair;
+    const cx = (a.x + b.x) / 2;
+    const cy = (a.y + b.y) / 2;
+    const dist = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
+    const angle = Math.atan2(b.y - a.y, b.x - a.x);
+
+    if (!this.gestureDecided) {
+      const ady = a.y - a.startY;
+      const bdy = b.y - b.startY;
+      const adx = a.x - a.startX;
+      const bdx = b.x - b.startX;
+      const travel = Math.max(Math.hypot(adx, ady), Math.hypot(bdx, bdy));
+      if (travel < GESTURE_DECIDE_PX) return;
+      // Neigen: beide Finger schieben parallel senkrecht, Abstand und Achse bleiben (fast) gleich
+      const parallel = ady * bdy > 0 && Math.abs(ady) >= 5 && Math.abs(bdy) >= 5 && Math.abs(adx) < Math.abs(ady) * 0.6 && Math.abs(bdx) < Math.abs(bdy) * 0.6;
+      const steady = Math.abs(dist - this.gStartDist) < this.gStartDist * 0.1 + 5 && Math.abs(wrapAngle(angle - this.gStartAngle)) < 0.1;
+      this.gestureTilt = parallel && steady;
+      this.gestureDecided = true;
+      this.gPrevCx = cx;
+      this.gPrevCy = cy;
+      this.gPrevDist = dist;
+      this.gPrevAngle = angle;
+      return;
+    }
+
+    const rect = this.canvas.getBoundingClientRect();
+    const w = Math.max(1, rect.width);
+    const h = Math.max(1, rect.height);
+    const g = this.gestureInfo;
+    g.cx = cx;
+    g.cy = cy;
+    g.nx = (cx / w) * 2 - 1;
+    g.ny = -(cy / h) * 2 + 1;
+    g.prevNx = (this.gPrevCx / w) * 2 - 1;
+    g.prevNy = -(this.gPrevCy / h) * 2 + 1;
+    if (this.gestureTilt) {
+      g.dx = 0;
+      g.dy = 0;
+      g.scale = 1;
+      g.rotation = 0;
+      g.tilt = cy - this.gPrevCy;
+    } else {
+      g.dx = cx - this.gPrevCx;
+      g.dy = cy - this.gPrevCy;
+      // sehr eng beieinander liegende Finger liefern verrauschte Winkel/Abstände
+      const stable = dist > 24 && this.gPrevDist > 24;
+      g.scale = stable ? dist / this.gPrevDist : 1;
+      g.rotation = stable ? wrapAngle(angle - this.gPrevAngle) : 0;
+      g.tilt = 0;
+    }
+    this.gPrevCx = cx;
+    this.gPrevCy = cy;
+    this.gPrevDist = dist;
+    this.gPrevAngle = angle;
+    this.input.px = cx;
+    this.input.py = cy;
+    this.input.inside = false;
+    this.active()?.onGesture?.(g);
+  }
+
+  private touchEnd(e: PointerEvent, cancelled: boolean): void {
+    const t = this.touches.get(e.pointerId);
+    if (!t) return;
+    this.touches.delete(e.pointerId);
+    try {
+      this.canvas.releasePointerCapture(e.pointerId);
+    } catch {
+      /* nicht kritisch */
+    }
+    if (this.touches.size > 0) {
+      // ein Finger bleibt liegen: er schwenkt ab seiner aktuellen Position weiter, ohne Sprung
+      this.touchDragging = true;
+      this.touches.forEach((r) => {
+        r.startX = r.x;
+        r.startY = r.y;
+      });
+      return;
+    }
+    const pos = cancelled ? { x: t.x, y: t.y } : this.touchPos(e);
+    const p = this.touchInfo(pos.x, pos.y, 0, 0, 0, 0);
+    if (cancelled) {
+      this.active()?.onPointerLeave();
+      return;
+    }
+    p.isClick = !this.touchTainted && this.touchMoved < TAP_MAX_MOVE && performance.now() - this.touchStartTime < TAP_MAX_MS;
+    this.active()?.onPointerUp(p);
+  }
+
+  private resetTouches(): void {
+    this.touches.forEach((_t, id) => {
+      try {
+        this.canvas.releasePointerCapture(id);
+      } catch {
+        /* nicht kritisch */
+      }
+    });
+    this.touches.clear();
+    this.touchTainted = false;
+  }
+
+  // ------------------------------------------------------------------ Kontextverlust
+
+  private onContextLost = (e: Event): void => {
+    e.preventDefault(); // erlaubt dem Browser, den Kontext wiederherzustellen
+    this.contextLost = true;
+  };
+
+  private onContextRestored = (): void => {
+    // three hat seinen GL-Zustand bereits neu aufgebaut (eigener Listener, früher registriert).
+    // Verloren sind alle nur auf der GPU existierenden Inhalte: Umgebungs-Map (PMREM) und Schattenkarten.
+    const r = this.renderer;
+    this.contextLost = false;
+    if (!r || this.disposed) return;
+    this.buildEnvironment();
+    this.assignEnvironment();
+    for (const s of this.scenes()) {
+      s.onContextRestored?.();
+      s.scene.traverse((o: THREE.Object3D) => {
+        if (o instanceof THREE.Light && o.shadow && o.shadow.map) {
+          o.shadow.map.dispose();
+          o.shadow.map = null;
+        }
+        if (o instanceof THREE.Mesh || o instanceof THREE.Sprite || o instanceof THREE.Points || o instanceof THREE.Line) {
+          const m: THREE.Material | THREE.Material[] = o.material;
+          if (Array.isArray(m)) m.forEach((x) => { x.needsUpdate = true; });
+          else m.needsUpdate = true;
+        }
+      });
+    }
+    r.shadowMap.needsUpdate = true;
+    this.width = 0; // erzwingt setSize/Viewport
+    this.resize();
+  };
 
   private info(e: PointerEvent): PointerInfo {
     const rect = this.canvas.getBoundingClientRect();
@@ -265,6 +612,7 @@ export class ThreeWorldView implements WorldView {
     p.button = e.type === 'pointermove' ? -1 : e.button;
     p.buttons = e.buttons;
     p.isClick = false;
+    p.touch = false;
     this.input.px = px;
     this.input.py = py;
     this.input.inside = px >= 0 && py >= 0 && px <= w && py <= h;
@@ -297,6 +645,7 @@ export class ThreeWorldView implements WorldView {
 
   setMode(mode: ViewMode): void {
     if (mode === this.mode) return;
+    this.resetTouches();
     this.active()?.onPointerLeave();
     this.mode = mode;
     this.canvas.style.cursor = 'default';
@@ -361,7 +710,13 @@ export class ThreeWorldView implements WorldView {
       }
     }
     const dpr = typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1;
-    const cap = g.preset === 'low' ? 1 : g.preset === 'medium' ? 1.5 : 2;
+    // Touch-Geräte (grober Zeiger): hohe Displaydichte bei schwacher GPU ⇒ Auflösung, Schatten und Partikel begrenzen
+    const coarse = isCoarsePointer();
+    this.quality.coarse = coarse;
+    this.quality.particleScale = coarse ? 0.5 : 1;
+    this.quality.maxShadowMap = coarse ? 1024 : 4096;
+    const desktopCap = g.preset === 'low' ? 1 : g.preset === 'medium' ? 1.5 : 2;
+    const cap = coarse ? Math.min(desktopCap, g.preset === 'low' ? 1 : 1.5) : desktopCap;
     const ratio = Math.min(dpr, cap);
     if (ratio !== this.pixelRatio) {
       this.pixelRatio = ratio;
@@ -374,7 +729,7 @@ export class ThreeWorldView implements WorldView {
 
   render(dtSeconds: number): void {
     const r = this.renderer;
-    if (!r || this.disposed) return;
+    if (!r || this.disposed || this.contextLost) return;
     const dt = Math.min(0.1, Math.max(0, Number.isFinite(dtSeconds) ? dtSeconds : 0));
     this.time += dt;
     if (dt > 0) this.fps += (1 / dt - this.fps) * 0.08;

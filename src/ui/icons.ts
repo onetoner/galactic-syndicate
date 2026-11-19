@@ -144,6 +144,8 @@ const UI_GLYPHS: Record<string, string> = {
   planet: `<circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c3 3 3 13 0 16M12 4c-3 3-3 13 0 16"/>`,
   galaxy: `<path d="M12 12c0-5 5-7 8-5M12 12c5 0 7 5 5 8M12 12c0 5-5 7-8 5M12 12c-5 0-7-5-5-8"/><circle cx="12" cy="12" r="1.5"/>`,
   pause: `<path d="M8 5v14M16 5v14"/>`,
+  side: `<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M14 4v16M17 9h1M17 12h1"/>`,
+  rotate: `<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/>`,
   menu: `<path d="M4 7h16M4 12h16M4 17h16"/>`,
   log: `<path d="M5 5h14v14H5z"/><path d="M8 9h8M8 12h8M8 15h5"/>`,
   close: `<path d="M6 6l12 12M18 6L6 18"/>`,

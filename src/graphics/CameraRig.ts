@@ -24,6 +24,9 @@ export const DEFAULT_CONTROLS: ControlOptions = { cameraSpeed: 1, zoomSensitivit
 
 const clamp = (v: number, a: number, b: number): number => Math.min(b, Math.max(a, v));
 
+/** Vorzeichen, mit dem eine Bildschirm-Drehung (im Uhrzeigersinn positiv) auf die Kamera-Gierung wirkt */
+const TWIST_SIGN = 1;
+
 function axis(keys: Set<string>, pos: string[], neg: string[]): number {
   let v = 0;
   for (const k of pos) if (keys.has(k)) v = 1;
@@ -59,6 +62,8 @@ export class OrbitRig {
   private curDistance = 14;
   private focusTarget: THREE.Vector3 | null = null;
   private tmp = new THREE.Vector3();
+  private tmpA = new THREE.Vector3();
+  private tmpB = new THREE.Vector3();
 
   constructor(readonly camera: THREE.PerspectiveCamera) {}
 
@@ -89,6 +94,102 @@ export class OrbitRig {
     const k = this.distance * 0.0016;
     this.moveLocal(-dxPixels * k, dyPixels * k);
     this.focusTarget = null;
+  }
+
+  // ---- Touch: direkte (ungeglättete) Varianten – der Punkt unter dem Finger soll unter dem Finger bleiben ----
+
+  /**
+   * Verankertes Schieben: verschiebt den Zielpunkt so, dass der Punkt der Ebene y = target.y, der bei
+   * (prevNx, prevNy) lag, jetzt bei (nx, ny) liegt. Fällt bei flachem Blickwinkel auf dragPan zurück.
+   */
+  touchPan(prevNx: number, prevNy: number, nx: number, ny: number, dxPixels: number, dyPixels: number): void {
+    if (!this.panEnabled) return;
+    this.focusTarget = null;
+    const a = this.groundPoint(prevNx, prevNy, this.tmpA);
+    const b = a ? this.groundPoint(nx, ny, this.tmpB) : null;
+    if (a && b) {
+      let mx = a.x - b.x;
+      let mz = a.z - b.z;
+      const len = Math.hypot(mx, mz);
+      const max = Math.max(1, this.curDistance) * 0.6;
+      if (len > max) {
+        mx *= max / len;
+        mz *= max / len;
+      }
+      const ox = this.target.x;
+      const oz = this.target.z;
+      this.target.x += mx;
+      this.target.z += mz;
+      this.clampTarget();
+      this.curTarget.x += this.target.x - ox;
+      this.curTarget.z += this.target.z - oz;
+      this.apply();
+      return;
+    }
+    const ox = this.target.x;
+    const oz = this.target.z;
+    const k = this.distance * 0.0016;
+    this.moveLocal(-dxPixels * k, dyPixels * k);
+    this.curTarget.x += this.target.x - ox;
+    this.curTarget.z += this.target.z - oz;
+    this.apply();
+  }
+
+  /** Pinch: factor > 1 = Finger auseinander = näher heran. */
+  touchZoom(factor: number): void {
+    if (!(factor > 0) || !Number.isFinite(factor)) return;
+    const f = Math.pow(clamp(factor, 0.5, 2), this.options.zoomSensitivity);
+    const d = clamp(this.distance / f, this.minDistance, this.maxDistance);
+    this.curDistance = clamp(this.curDistance * (d / this.distance), this.minDistance, this.maxDistance);
+    this.distance = d;
+    this.apply();
+  }
+
+  /**
+   * Pinch + Twist um den Bildschirmpunkt (nx, ny): der Bodenpunkt unter dem Finger-Schwerpunkt bleibt dort.
+   * rotation > 0 = Finger drehen im Uhrzeigersinn ⇒ die Welt dreht sich mit.
+   */
+  touchZoomRotateAt(factor: number, rotation: number, nx: number, ny: number): void {
+    const before = this.panEnabled ? this.groundPoint(nx, ny, this.tmpA) : null;
+    this.touchZoom(factor);
+    if (rotation !== 0 && Number.isFinite(rotation)) {
+      this.yaw += rotation * TWIST_SIGN;
+      this.curYaw += rotation * TWIST_SIGN;
+      this.apply();
+    }
+    if (!before) return;
+    const after = this.groundPoint(nx, ny, this.tmpB);
+    if (!after) return;
+    const ox = this.target.x;
+    const oz = this.target.z;
+    this.target.x += before.x - after.x;
+    this.target.z += before.z - after.z;
+    this.clampTarget();
+    this.curTarget.x += this.target.x - ox;
+    this.curTarget.z += this.target.z - oz;
+    this.focusTarget = null;
+    this.apply();
+  }
+
+  /** Drehen/Neigen ohne Maus-Invertierung und ohne Nachlauf. */
+  touchRotate(dYaw: number, dPitch: number): void {
+    if (!Number.isFinite(dYaw) || !Number.isFinite(dPitch)) return;
+    const p = clamp(this.pitch + dPitch, this.minPitch, this.maxPitch);
+    this.curPitch = clamp(this.curPitch + (p - this.pitch), this.minPitch, this.maxPitch);
+    this.pitch = p;
+    this.yaw += dYaw;
+    this.curYaw += dYaw;
+    this.apply();
+  }
+
+  /** Schnittpunkt des Sichtstrahls durch (nx, ny) mit der Ebene y = curTarget.y; null bei (fast) parallelem Strahl. */
+  private groundPoint(nx: number, ny: number, out: THREE.Vector3): THREE.Vector3 | null {
+    this.camera.updateMatrixWorld();
+    out.set(nx, ny, 0.5).unproject(this.camera).sub(this.camera.position);
+    if (out.y > -1e-4) return null;
+    const t = (this.curTarget.y - this.camera.position.y) / out.y;
+    if (!(t > 0) || !Number.isFinite(t)) return null;
+    return out.multiplyScalar(t).add(this.camera.position);
   }
 
   zoom(wheelDelta: number): void {

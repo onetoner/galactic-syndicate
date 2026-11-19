@@ -3,7 +3,7 @@ import type { Game, SectorType, Settings } from '../core';
 import { OrbitRig } from './CameraRig';
 import { latLonToVector, snapToLand } from './Earth';
 import type { EarthObject } from './Earth';
-import type { PointerInfo, SceneContext, SceneController } from './SceneBase';
+import type { GestureInfo, PointerInfo, SceneContext, SceneController } from './SceneBase';
 import { Disposer, makeLabelSprite, makeStarfield } from './util';
 import type { LabelSprite } from './util';
 
@@ -160,7 +160,8 @@ export class PlanetScene implements SceneController {
 
   private pickMarker(p: PointerInfo): number | null {
     let best: number | null = null;
-    let bestD = 26;
+    // Finger brauchen eine größere Trefferfläche als der Mauszeiger
+    let bestD = p.touch ? 44 : 26;
     for (const m of this.markers) {
       if (!m.group.visible) continue;
       this.tmp.set(0, 0.11, 0);
@@ -182,6 +183,12 @@ export class PlanetScene implements SceneController {
   }
 
   onPointerMove(p: PointerInfo): void {
+    if (p.touch) {
+      // ein Finger zieht: Globus drehen – nah herangezoomt langsamer, damit die Oberfläche dem Finger folgt
+      const k = Math.min(1.4, Math.max(0.35, this.rig.distance / 16));
+      this.rig.touchRotate(-p.dx * 0.0055 * k, p.dy * 0.0045 * k);
+      return;
+    }
     if (p.buttons !== 0) {
       this.rig.rotate(p.dx, p.dy);
       return;
@@ -198,6 +205,12 @@ export class PlanetScene implements SceneController {
     if (!p.isClick || p.button !== 0) return;
     const id = this.pickMarker(p);
     if (id !== null) this.ctx.emit('sectorSelect', { sectorId: String(id) });
+    if (p.touch) this.hovered = null;
+  }
+
+  /** zwei Finger: Pinch = Zoom */
+  onGesture(g: GestureInfo): void {
+    this.rig.touchZoom(g.scale);
   }
 
   onPointerLeave(): void {

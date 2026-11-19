@@ -22,6 +22,42 @@ export interface PointerInfo {
   dy: number;
   /** true, wenn zwischen Drücken und Loslassen kaum Bewegung lag (echter Klick) */
   isClick: boolean;
+  /** true, wenn das Ereignis von einem Finger stammt (pointerType 'touch'); Maus/Stift = false */
+  touch: boolean;
+}
+
+/**
+ * Zwei-Finger-Geste (Touch). Alle Werte sind Änderungen seit dem letzten Gesten-Ereignis.
+ * Pro Geste ist entweder Zoom/Drehen/Schieben aktiv oder (bei parallelem senkrechtem Schieben) nur `tilt`.
+ */
+export interface GestureInfo {
+  /** Schwerpunkt der beiden Finger in Canvas-Pixeln bzw. normalisierten Gerätekoordinaten */
+  cx: number;
+  cy: number;
+  nx: number;
+  ny: number;
+  /** Schwerpunkt des vorherigen Ereignisses (normalisiert) – für verankertes Schieben */
+  prevNx: number;
+  prevNy: number;
+  /** Bewegung des Schwerpunkts in Pixeln */
+  dx: number;
+  dy: number;
+  /** Abstandsverhältnis der Finger (> 1 = auseinander = hineinzoomen) */
+  scale: number;
+  /** Drehung der Fingerachse in Radiant (positiv = im Uhrzeigersinn auf dem Bildschirm) */
+  rotation: number;
+  /** senkrechtes Zwei-Finger-Schieben in Pixeln (nur im Neige-Modus ≠ 0) */
+  tilt: number;
+}
+
+/** Qualitäts-Grenzen, die ThreeWorldView je nach Gerät setzt (Touch-Geräte: weniger Partikel, kleinere Schattenkarte). */
+export interface QualityLimits {
+  /** Faktor auf Partikel-Kapazität und -Menge (1 = unverändert) */
+  particleScale: number;
+  /** größte erlaubte Schattenkarten-Kantenlänge */
+  maxShadowMap: number;
+  /** Zeiger ist grob (Finger): größere Trefferflächen, größere Labels */
+  coarse: boolean;
 }
 
 /** Von ThreeWorldView bereitgestellte, szenenübergreifende Dienste. */
@@ -32,6 +68,8 @@ export interface SceneContext {
   /** geteilte Texturen */
   readonly glowTexture: THREE.Texture;
   readonly ringTexture: THREE.Texture;
+  /** wird von ThreeWorldView vor applySettings() aktualisiert */
+  readonly quality: QualityLimits;
   emit<K extends WorldViewEventName>(event: K, payload: WorldViewEvents[K]): void;
   setCursor(cursor: string): void;
 }
@@ -50,6 +88,10 @@ export interface SceneController {
   onPointerUp(p: PointerInfo): void;
   onPointerLeave(): void;
   onWheel(delta: number): void;
+  /** Zwei-Finger-Geste (optional; Szenen ohne Kamera-Steuerung lassen sie weg) */
+  onGesture?(g: GestureInfo): void;
+  /** WebGL-Kontext wurde wiederhergestellt: GPU-seitige Ressourcen (Schattenkarten …) verwerfen */
+  onContextRestored?(): void;
   /** true = Taste wurde verarbeitet */
   onKeyDown(code: string): boolean;
   dispose(): void;

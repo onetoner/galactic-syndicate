@@ -3,7 +3,7 @@ import { PLAYER_COLOR, SCAN_RANGE, SOL_ID } from '../core';
 import type { GalaxyNode, Game, Settings, Ship } from '../core';
 import { OrbitRig } from './CameraRig';
 import { ParticleSystem } from './Particles';
-import type { PointerInfo, SceneContext, SceneController } from './SceneBase';
+import type { GestureInfo, PointerInfo, SceneContext, SceneController } from './SceneBase';
 import { Disposer, makeLabelSprite, makeNebulaTexture, makeStarfield } from './util';
 import type { LabelSprite } from './util';
 
@@ -181,10 +181,16 @@ export class GalaxyScene implements SceneController {
   applySettings(settings: Settings): void {
     this.rig.options = { ...settings.controls };
     const p = settings.graphics.particles;
-    this.particles.setCapacity(p === 'high' ? 600 : p === 'low' ? 200 : 0);
+    this.particles.setCapacity(Math.round((p === 'high' ? 600 : p === 'low' ? 200 : 0) * this.ctx.quality.particleScale));
     this.camera.far = Math.max(1200, settings.graphics.viewDistance * 8);
     this.camera.updateProjectionMatrix();
     this.rig.maxDistance = Math.max(120, settings.graphics.viewDistance * 1.2);
+  }
+
+  /** 1 ab 620 CSS-Pixel Höhe (PC/Tablet), bis 1,7 auf sehr niedrigen Bildschirmen */
+  private smallScreenScale(): number {
+    const h = this.ctx.input.height;
+    return h >= 620 || h <= 1 ? 1 : Math.min(1.7, 620 / h);
   }
 
   onEnter(): void {
@@ -495,7 +501,8 @@ export class GalaxyScene implements SceneController {
 
   private pickSystem(p: PointerInfo): string | null {
     let best: string | null = null;
-    let bestD = 22;
+    // Finger: großzügiger Trefferradius, das nächstgelegene System gewinnt
+    let bestD = p.touch ? 30 : 22;
     const w = this.ctx.input.width;
     const h = this.ctx.input.height;
     this.stars.forEach((v, id) => {
@@ -515,6 +522,13 @@ export class GalaxyScene implements SceneController {
   onPointerDown(_p: PointerInfo): void { /* – */ }
 
   onPointerMove(p: PointerInfo): void {
+    if (p.touch) {
+      // ein Finger zieht: Karte verschieben – der Punkt unter dem Finger bleibt unter dem Finger
+      const w = Math.max(1, this.ctx.input.width);
+      const h = Math.max(1, this.ctx.input.height);
+      this.rig.touchPan(p.nx - (p.dx / w) * 2, p.ny + (p.dy / h) * 2, p.nx, p.ny, p.dx, p.dy);
+      return;
+    }
     if (p.buttons & 6) {
       this.rig.rotate(p.dx, p.dy);
       return;
@@ -537,6 +551,17 @@ export class GalaxyScene implements SceneController {
     this.selected = id;
     this.labelTimer = 0;
     this.ctx.emit('systemSelect', { systemId: id });
+    if (p.touch) this.hovered = null;
+  }
+
+  /** zwei Finger: Pinch = Zoom, Twist = Drehen, gemeinsames Schieben = Verschieben; paralleles senkrechtes Schieben = Neigen */
+  onGesture(g: GestureInfo): void {
+    if (g.tilt !== 0) {
+      this.rig.touchRotate(0, g.tilt * 0.006);
+      return;
+    }
+    this.rig.touchPan(g.prevNx, g.prevNy, g.nx, g.ny, g.dx, g.dy);
+    this.rig.touchZoomRotateAt(g.scale, g.rotation, g.nx, g.ny);
   }
 
   onPointerLeave(): void {
@@ -579,7 +604,8 @@ export class GalaxyScene implements SceneController {
       if (!v) return;
       l.sprite.position.copy(v.pos);
       const dist = this.camera.position.distanceTo(v.pos);
-      const hgt = dist * 0.028;
+      // auf niedrigen Viewports (Smartphone quer) Labels vergrößern, damit sie lesbar bleiben
+      const hgt = dist * 0.028 * this.smallScreenScale();
       const aspect = l.sprite.scale.x / Math.max(1e-6, l.sprite.scale.y);
       l.sprite.scale.set(hgt * aspect, hgt, 1);
     });

@@ -158,20 +158,7 @@ export function wire(ctx: WiringContext): () => void {
       }
       // Die 3D-Welt hat Esc bereits für den Bau-/Abriss-Modus verbraucht
       if (performance.now() - ui.escConsumedAt < 80) return;
-      if (s.confirm) ui.act('confirm-no');
-      else if (s.screen === 'menu') {
-        if (s.menuDialog) ui.act('dialog-close');
-      } else if (s.pauseOpen) {
-        if (s.pauseDialog) ui.act('dialog-close');
-        else ui.setPause(false);
-      } else if (game.state.pendingEncounters.length > 0) {
-        /* Kontrolle verlangt eine Entscheidung */
-      } else if (ui.cancelModes()) {
-        /* Bau-/Abriss-Modus beendet */
-      } else if (s.selectedBuildingId !== null || s.selectedTile) ui.selectBuilding(null, null);
-      else if (s.view === 'galaxy' && s.selectedSystemId) ui.selectSystem(null, false);
-      else if (s.leftPanel) ui.openPanel(null);
-      else ui.setPause(true);
+      ui.escape();
       e.preventDefault();
       return;
     }
@@ -232,6 +219,58 @@ export function wire(ctx: WiringContext): () => void {
   };
   window.addEventListener('keydown', onKey);
   offs.push(() => window.removeEventListener('keydown', onKey));
+
+  // ------------------------------------------------------------ Zurück-Taste (Android) / Browser-Zurück
+  // Ohne Plugin: solange es etwas zu schließen gibt (laufendes Spiel oder offener Menü-Dialog), liegt ein
+  // „Wächter"-Eintrag im Verlauf. Zurück verbraucht ihn (popstate) und wirkt wie Esc; im Spiel wird er sofort
+  // neu angelegt, damit die App nicht verlassen wird. Im Hauptmenü ohne Dialog verlässt Zurück die App.
+  const canGuard = typeof history !== 'undefined' && typeof history.pushState === 'function';
+  const GUARD = { gsGuard: true };
+  let guarded = false;
+  let dropping = false;
+  const pushGuard = (): void => {
+    try {
+      history.pushState(GUARD, '');
+      guarded = true;
+    } catch {
+      /* z. B. file://-Einschränkungen – dann ohne Zurück-Unterstützung */
+    }
+  };
+  const wantGuard = (): boolean => ui.s.screen === 'game' || ui.s.menuDialog !== null || ui.s.confirm !== null;
+  const syncGuard = (): void => {
+    if (!canGuard || dropping) return;
+    const want = wantGuard();
+    if (want && !guarded) pushGuard();
+    else if (!want && guarded) {
+      // nichts mehr zu schließen: Wächter-Eintrag wieder entfernen
+      guarded = false;
+      dropping = true;
+      try {
+        history.back();
+      } catch {
+        dropping = false;
+      }
+    }
+  };
+  const onPop = (): void => {
+    if (dropping) {
+      dropping = false;
+      return;
+    }
+    if (!guarded) return;
+    guarded = false;
+    ui.escape();
+    ui.invalidate();
+    if (wantGuard()) pushGuard();
+  };
+  if (canGuard) {
+    window.addEventListener('popstate', onPop);
+    offs.push(() => window.removeEventListener('popstate', onPop));
+    ui.afterRender = syncGuard;
+    offs.push(() => {
+      ui.afterRender = null;
+    });
+  }
 
   return () => {
     for (const off of offs) off();

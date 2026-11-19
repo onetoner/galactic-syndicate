@@ -34,6 +34,12 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
+  /* kein Gummiband-/Pull-to-Refresh-Scrollen, kein Doppeltipp-Zoom */
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
   background: var(--bg0);
   color: var(--text);
   font-family: var(--font);
@@ -74,13 +80,19 @@ body[data-screen='menu']::before {
 
 #ui-root {
   position: fixed;
-  inset: 0;
+  /* Safe-Area (Notch, Kamera-Loch, Gestenleiste): das gesamte UI rückt ein, die 3D-Welt bleibt randlos */
+  top: calc(env(safe-area-inset-top, 0px) / var(--ui-scale, 1));
+  right: calc(env(safe-area-inset-right, 0px) / var(--ui-scale, 1));
+  bottom: calc(env(safe-area-inset-bottom, 0px) / var(--ui-scale, 1));
+  left: calc(env(safe-area-inset-left, 0px) / var(--ui-scale, 1));
   z-index: 2;
   pointer-events: none;
   font-size: 13.5px;
   line-height: 1.4;
   container-type: inline-size;
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .boot {
@@ -1613,9 +1625,41 @@ small {
   border-color: rgba(53, 224, 255, 0.55);
   max-width: 100%;
 }
-.mode-hint span {
+.mode-hint .mh-text {
   color: var(--muted);
   font-size: 12px;
+}
+.mode-hint .mh-pick {
+  gap: 8px;
+  padding: 3px 10px 3px 6px;
+  text-align: left;
+  border-color: rgba(53, 224, 255, 0.45);
+}
+.mode-hint .mh-pick .bico {
+  width: 22px;
+  height: 22px;
+  color: var(--cyan);
+}
+.mode-hint .mh-name {
+  display: grid;
+  line-height: 1.15;
+}
+.mode-hint .mh-name small {
+  color: var(--gold);
+  font-weight: 700;
+}
+.mode-hint .mh-btn .uico {
+  width: 16px;
+  height: 16px;
+}
+.mode-hint .mh-rot {
+  display: inline;
+  min-width: 26px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.mode-hint .mh-title {
+  color: #ffc2c8;
 }
 .mode-hint.is-danger {
   border-color: rgba(255, 93, 108, 0.6);
@@ -2160,7 +2204,7 @@ small {
   .help {
     display: none;
   }
-  .mode-hint span {
+  .mode-hint .mh-text {
     display: none;
   }
   .stat-time,
@@ -2202,6 +2246,838 @@ small {
   .enc .portrait-lg {
     width: 100px;
     height: 100px;
+  }
+}
+
+/* ------------------------------------------------------------------ Touch & kleine Bildschirme (Tablet, Smartphone, APK)
+   Die Geräteklasse setzt Ui.updateDevice() als Attribut auf #ui-root:
+     data-device = phone | tablet | desktop   (nach wirksamer Fenstergröße, d. h. Viewport ÷ UI-Skalierung)
+     data-coarse = 1                          (Finger als Haupteingabe)
+   So greifen die Regeln unabhängig von der per `zoom` angewandten UI-Skalierung. */
+
+.coarse-only,
+.lbl-short,
+.rail-ctx,
+.sheet-bar {
+  display: none;
+}
+.minimap-wrap {
+  max-width: 100%;
+}
+.job-val {
+  font-variant-numeric: tabular-nums;
+}
+.txt-save {
+  display: block;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 110px;
+  height: 220px;
+  max-height: 100%;
+  resize: none;
+  font: 11.5px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  word-break: break-all;
+  white-space: pre-wrap;
+  overflow-y: auto;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.dlg-body,
+.scroll,
+.right-col,
+.minimap-wrap {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+/* Abdunklung reicht bis unter Notch/Gestenleiste */
+.overlay {
+  box-shadow: 0 0 0 240px rgba(3, 5, 12, 0.62);
+}
+
+/* deaktivierte Buttons im Touch-Modus (tragen nur aria-disabled, damit Antippen den Grund zeigt) */
+.btn.is-disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+.btn.is-disabled:hover,
+.btn.is-disabled:active {
+  transform: none;
+}
+
+/* Hochformat auf kleinen Geräten: Hinweis statt gequetschtem Layout (liegt außerhalb von #ui-root) */
+.rotate-hint {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  background: #05070f;
+  color: var(--text);
+  font: 15px/1.4 var(--font);
+}
+.rotate-hint svg {
+  width: 84px;
+  height: 84px;
+  color: var(--muted);
+}
+.rotate-hint b {
+  font-size: 19px;
+  letter-spacing: 0.04em;
+}
+.rotate-hint span {
+  color: var(--muted);
+}
+@media (orientation: portrait) and (max-width: 699px) {
+  .rotate-hint {
+    display: grid;
+  }
+}
+
+/* Geräte ohne Hover: angetippte Elemente sollen nicht im Hover-Zustand „kleben" */
+@media (hover: none) {
+  .btn:hover:not(:disabled):not(.is-active) {
+    background: rgba(255, 255, 255, 0.055);
+    border-color: var(--line);
+  }
+  .btn-primary:hover:not(:disabled):not(.is-active) {
+    background: linear-gradient(135deg, rgba(53, 224, 255, 0.92), rgba(72, 132, 255, 0.92));
+    border-color: rgba(190, 240, 255, 0.6);
+  }
+  .btn-danger:hover:not(:disabled):not(.is-active) {
+    background: rgba(255, 93, 108, 0.1);
+    border-color: rgba(255, 93, 108, 0.5);
+  }
+  .btn-gold:hover:not(:disabled):not(.is-active) {
+    background: rgba(255, 194, 74, 0.1);
+    border-color: rgba(255, 194, 74, 0.55);
+  }
+  .btn-ghost:hover:not(:disabled):not(.is-active),
+  .tab:hover:not(:disabled):not(.is-active),
+  .rail-btn:hover:not(:disabled):not(.is-active),
+  .seg .seg-btn:hover:not(:disabled):not(.is-active) {
+    background: transparent;
+    border-color: transparent;
+  }
+  .seg .seg-btn + .seg-btn:hover:not(:disabled) {
+    border-left-color: var(--line);
+  }
+  .btn-ghost:hover:not(:disabled):not(.is-active) {
+    color: var(--muted);
+  }
+  .menu-nav .btn-menu:hover {
+    transform: none;
+    border-color: var(--line);
+    background: rgba(10, 14, 28, 0.6);
+  }
+  .menu-nav .btn-menu.btn-primary:hover {
+    background: linear-gradient(135deg, rgba(53, 224, 255, 0.95), rgba(255, 61, 154, 0.85));
+  }
+  .build-item:hover:not(.is-active) {
+    background: rgba(255, 255, 255, 0.045);
+    border-color: var(--line);
+  }
+  .cell:hover {
+    border-color: rgba(160, 190, 255, 0.08);
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .cell.has-b:hover {
+    background: rgba(255, 255, 255, 0.09);
+  }
+}
+
+/* ---------- grober Zeiger: Touch-Ziele mindestens 40 × 40 px (in echten Bildschirm-Pixeln, unabhängig von der Skalierung) */
+.gs-ui[data-coarse='1'] {
+  --tt: calc(40px / var(--ui-scale, 1));
+}
+.gs-ui[data-coarse='1'] .fine-only,
+.gs-ui[data-coarse='1'] kbd {
+  display: none;
+}
+.gs-ui[data-coarse='1'] .coarse-only {
+  display: inline;
+}
+.gs-ui[data-coarse='1'] .btn,
+.gs-ui[data-coarse='1'] .seg .seg-btn,
+.gs-ui[data-coarse='1'] .tab,
+.gs-ui[data-coarse='1'] .inp,
+.gs-ui[data-coarse='1'] .sel,
+.gs-ui[data-coarse='1'] .build-item {
+  min-height: var(--tt);
+  min-width: var(--tt);
+}
+.gs-ui[data-coarse='1'] .btn-icon,
+.gs-ui[data-coarse='1'] .btn-icon.btn-xs {
+  width: var(--tt);
+  min-width: var(--tt);
+  font-size: 15px;
+}
+.gs-ui[data-coarse='1'] .inp-num {
+  width: 96px;
+}
+.gs-ui[data-coarse='1'] .chips {
+  gap: 8px;
+}
+.gs-ui[data-coarse='1'] .item-act {
+  gap: 8px;
+}
+.gs-ui[data-coarse='1'] .tabs {
+  gap: 4px;
+}
+.gs-ui[data-coarse='1'] .btn-seed {
+  padding: 3px 9px;
+}
+.gs-ui[data-coarse='1'] .bulk,
+.gs-ui[data-coarse='1'] .row,
+.gs-ui[data-coarse='1'] .slot-actions {
+  gap: 8px;
+}
+.gs-ui[data-coarse='1'] .panel-head {
+  padding: 4px 6px 4px 12px;
+}
+.gs-ui[data-coarse='1'] .dlg-head {
+  padding: 8px 8px 8px 16px;
+}
+/* Regler: großer Griff */
+.gs-ui[data-coarse='1'] .rng {
+  -webkit-appearance: none;
+  appearance: none;
+  height: var(--tt);
+  min-width: 120px;
+  background: transparent;
+  touch-action: pan-y;
+}
+.gs-ui[data-coarse='1'] .rng::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.2);
+}
+.gs-ui[data-coarse='1'] .rng::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 28px;
+  height: 28px;
+  margin-top: -11px;
+  border-radius: 50%;
+  border: 3px solid #04121c;
+  background: var(--cyan);
+  box-shadow: 0 0 0 1px rgba(53, 224, 255, 0.6);
+}
+/* Rasterkarte: feste Feldgröße, bei großen Sektoren scrollt die Karte */
+.gs-ui[data-coarse='1'] .minimap-wrap {
+  overflow: auto;
+  border-radius: 10px;
+  scrollbar-width: thin;
+}
+.gs-ui[data-coarse='1'] .minimap {
+  grid-template-columns: repeat(var(--cols, 6), var(--tt));
+  width: max-content;
+  margin: 0 auto;
+}
+.gs-ui[data-coarse='1'] .cell {
+  width: var(--tt);
+  height: var(--tt);
+  aspect-ratio: auto;
+}
+/* Topbar: Segment-Schalter sind jetzt höher */
+.gs-ui[data-coarse='1'] .topbar {
+  height: calc(var(--tt) + 14px);
+}
+.gs-ui[data-coarse='1'] .tb-view .seg-btn {
+  padding: 4px 10px;
+}
+.gs-ui[data-coarse='1'] .log-bar,
+.gs-ui[data-coarse='1'] .btn-job {
+  height: calc(var(--tt) + 2px);
+  min-height: 0;
+}
+.gs-ui[data-coarse='1'] .mode-hint {
+  padding: 6px 8px;
+  gap: 8px;
+}
+.gs-ui[data-coarse='1'] .mode-hint .mh-btn {
+  padding: 4px 12px;
+  font-size: 13px;
+}
+.gs-ui[data-coarse='1'] .help li.now {
+  min-height: var(--tt);
+}
+.gs-ui[data-coarse='1'] .tooltip {
+  font-size: 12.5px;
+  max-width: 300px;
+  border-color: var(--cyan);
+}
+
+/* ---------- Smartphone im Querformat (wirksame Höhe ≤ 500 px): kompakte Leisten, immer nur EIN Sheet */
+.gs-ui[data-device='phone'] {
+  font-size: 13px;
+}
+.gs-ui[data-device='phone'] .region-topbar {
+  top: 6px;
+  left: 6px;
+  right: 6px;
+}
+.gs-ui[data-device='phone'] .topbar {
+  height: calc(var(--tt, 34px) + 8px);
+  gap: 8px;
+  padding: 0 4px 0 6px;
+  border-radius: 12px;
+}
+.gs-ui[data-device='phone'] .tb-id {
+  flex: 0 0 auto;
+}
+.gs-ui[data-device='phone'] .tb-names {
+  display: none;
+}
+.gs-ui[data-device='phone'] .tb-id .portrait-sm {
+  width: 34px;
+  height: 34px;
+}
+.gs-ui[data-device='phone'] .tb-stats {
+  gap: 10px;
+}
+.gs-ui[data-device='phone'] .stat > span {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+}
+.gs-ui[data-device='phone'] .stat > b {
+  font-size: 14px;
+}
+.gs-ui[data-device='phone'] .stat-credits > b {
+  font-size: 15.5px;
+}
+.gs-ui[data-device='phone'] .stat-time,
+.gs-ui[data-device='phone'] .stat-heat .bar {
+  display: none;
+}
+.gs-ui[data-device='phone'] .lbl-long {
+  display: none;
+}
+.gs-ui[data-device='phone'] .lbl-short {
+  display: inline;
+}
+.gs-ui[data-device='phone'] .btn-bribe {
+  padding: 4px 8px;
+}
+.gs-ui[data-device='phone'] .tb-view .seg-btn span {
+  display: none;
+}
+.gs-ui[data-device='phone'] .tb-view .seg-btn,
+.gs-ui[data-device='phone'] .tb-right .seg-btn {
+  padding: 4px 6px;
+}
+.gs-ui[data-device='phone'] .tb-right {
+  gap: 6px;
+}
+
+/* Navigationsleiste: schmale Icon-Leiste am linken Rand, zusätzlich der Umschalter für das rechte Sheet */
+.gs-ui[data-device='phone'] .region-nav {
+  top: calc(var(--tt, 34px) + 18px);
+  left: 6px;
+}
+.gs-ui[data-device='phone'] .rail {
+  width: calc(var(--tt, 34px) + 8px);
+  padding: 4px;
+  gap: 2px;
+  border-radius: 12px;
+}
+.gs-ui[data-device='phone'] .rail-btn {
+  min-height: var(--tt, 34px);
+  padding: 0;
+}
+.gs-ui[data-device='phone'] .rail-btn span {
+  display: none;
+}
+.gs-ui[data-device='phone'] .rail-ctx {
+  display: inline-flex;
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+}
+.gs-ui[data-device='phone'] .rail-ctx.is-active {
+  color: var(--gold);
+}
+
+/* Sheets: linkes Panel bzw. rechte Spalte über die volle Höhe, intern scrollend */
+.gs-ui[data-device='phone'] .region-left,
+.gs-ui[data-device='phone'] .region-right {
+  top: calc(var(--tt, 34px) + 18px);
+  bottom: 6px;
+  width: min(58%, 430px);
+  z-index: 8;
+}
+.gs-ui[data-device='phone'] .region-left {
+  left: calc(var(--tt, 34px) + 18px);
+}
+.gs-ui[data-device='phone'] .region-left > .panel {
+  max-height: 100%;
+  background: var(--panel-strong);
+}
+.gs-ui[data-device='phone'] .region-right {
+  display: none;
+  right: 6px;
+}
+.gs-ui[data-device='phone'][data-right='1'] .region-right {
+  display: block;
+}
+.gs-ui[data-device='phone'] .right-col {
+  gap: 6px;
+  height: 100%;
+  padding: 0 0 2px;
+}
+.gs-ui[data-device='phone'] .right-col > .panel {
+  background: var(--panel-strong);
+}
+.gs-ui[data-device='phone'] .sheet-bar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: none;
+  padding: 0 0 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #0a1022;
+  pointer-events: auto;
+}
+.gs-ui[data-device='phone'] .sheet-bar b {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+.gs-ui[data-device='phone'] .panel-head {
+  padding: 3px 4px 3px 10px;
+}
+.gs-ui[data-device='phone'] .panel-head h3 {
+  font-size: 13.5px;
+}
+/* im rechten Sheet schließt die Sheet-Kopfzeile – die inneren Schließen-Knöpfe entfallen */
+.gs-ui[data-device='phone'] .right-col .panel-head {
+  padding: 6px 10px;
+}
+.gs-ui[data-device='phone'] .right-col .panel-head .btn-icon {
+  display: none;
+}
+.gs-ui[data-device='phone'] .panel-body {
+  padding: 8px 10px;
+}
+.gs-ui[data-device='phone'] .tabs {
+  padding: 0 6px;
+}
+
+/* unten: Log und Gelegenheitsjob platzsparend rechts neben der Icon-Leiste; bei offenem Sheet ausgeblendet */
+.gs-ui[data-device='phone'] .region-bottom {
+  left: calc(var(--tt, 34px) + 18px);
+  right: 6px;
+  bottom: 6px;
+  z-index: 9;
+}
+.gs-ui[data-device='phone'][data-sheet='1'] .bottom-left {
+  display: none;
+}
+.gs-ui[data-device='phone'] .log {
+  flex: 0 1 300px;
+  border-radius: 12px;
+}
+.gs-ui[data-device='phone'] .log-bar .btn span {
+  display: none;
+}
+.gs-ui[data-device='phone'] .log-bar {
+  padding: 0 8px 0 0;
+}
+.gs-ui[data-device='phone'] .log-last {
+  font-size: 12px;
+}
+.gs-ui[data-device='phone'] .log-list {
+  max-height: 150px;
+}
+.gs-ui[data-device='phone'] .btn-job {
+  padding: 0 10px;
+  border-radius: 12px;
+}
+.gs-ui[data-device='phone'] .btn-job span {
+  display: none;
+}
+.gs-ui[data-device='phone'] .bottom-center,
+.gs-ui[data-device='phone'][data-left]:not([data-left='']) .bottom-center {
+  left: 0;
+  right: 0;
+  bottom: calc(var(--tt, 34px) + 10px);
+}
+/* Bau-/Abriss-Modus: Buttons sitzen ganz unten, das Log weicht */
+.gs-ui[data-device='phone'][data-mode='1'] .bottom-left {
+  display: none;
+}
+.gs-ui[data-device='phone'][data-mode='1'] .bottom-center {
+  bottom: 0;
+}
+.gs-ui[data-device='phone'][data-mode='1'][data-right='1'] .bottom-center {
+  right: min(58%, 430px);
+  justify-content: flex-start;
+}
+.gs-ui[data-device='phone'][data-mode='1'][data-right='1'] .mode-hint:not(.is-danger) .mh-btn span,
+.gs-ui[data-device='phone'][data-mode='1'][data-right='1'] .mh-rot,
+.gs-ui[data-device='phone'][data-mode='1'][data-right='1'] .mh-title {
+  display: none;
+}
+.gs-ui[data-device='phone'] .mode-hint .mh-pick {
+  min-width: 0;
+}
+.gs-ui[data-device='phone'] .mode-hint .mh-name b {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gs-ui[data-device='phone'] .mode-hint {
+  background: var(--panel-strong);
+  border-radius: 12px;
+}
+.gs-ui[data-device='phone'] .mode-hint .mh-text {
+  display: none;
+}
+.gs-ui[data-device='phone'] .help {
+  display: block;
+  width: 330px;
+  padding: 5px 8px 6px 10px;
+  border-radius: 12px;
+}
+.gs-ui[data-device='phone'] .help header {
+  float: right;
+  margin: 0 0 0 6px;
+}
+.gs-ui[data-device='phone'] .help header b {
+  display: none;
+}
+.gs-ui[data-device='phone'] .help li:not(.now) {
+  display: none;
+}
+.gs-ui[data-device='phone'][data-sheet='1'] .help {
+  display: none;
+}
+
+/* Meldungen: unten über der 3D-Welt, damit Kopfzeilen und Schließen-Knöpfe der Sheets frei bleiben */
+.gs-ui[data-device='phone'] .region-toasts,
+.gs-ui[data-device='phone'][data-banner='1'] .region-toasts {
+  top: auto;
+  bottom: calc(var(--tt, 34px) * 2 + 26px);
+}
+.gs-ui[data-device='phone'] .toasts {
+  max-width: 440px;
+  gap: 4px;
+  flex-direction: column-reverse;
+}
+.gs-ui[data-device='phone'] .toast:nth-last-child(n + 3) {
+  display: none;
+}
+/* bei offenem Sheet rücken die Meldungen in den freien Teil der 3D-Welt */
+.gs-ui[data-device='phone'][data-left]:not([data-left='']) .region-toasts {
+  left: calc(var(--tt, 34px) + 24px + min(58%, 430px));
+  right: 6px;
+  bottom: 10px;
+}
+.gs-ui[data-device='phone'][data-right='1'] .region-toasts {
+  left: calc(var(--tt, 34px) + 18px);
+  right: calc(min(58%, 430px) + 12px);
+  bottom: 10px;
+}
+.gs-ui[data-device='phone'][data-right='1'][data-mode='1'] .region-toasts {
+  bottom: calc(var(--tt, 34px) + 26px);
+}
+.gs-ui[data-device='phone'][data-sheet='1'] .toasts {
+  padding: 0;
+}
+.gs-ui[data-device='phone'][data-sheet='1'] .toast {
+  font-size: 12px;
+  padding: 5px 9px;
+}
+.gs-ui[data-device='phone'] .toast {
+  padding: 5px 12px;
+  font-size: 12.5px;
+}
+.gs-ui[data-device='phone'] .banner,
+.gs-ui[data-device='phone'] .banner-low {
+  top: calc(var(--tt, 34px) + 18px);
+  left: 50%;
+  width: 430px;
+  padding: 7px 10px;
+}
+.gs-ui[data-device='phone'] .banner + .banner-low {
+  top: calc(var(--tt, 34px) + 96px);
+}
+.gs-ui[data-device='phone'] .banner .portrait-md {
+  width: 42px;
+  height: 42px;
+}
+.gs-ui[data-device='phone'] .banner b {
+  font-size: 13.5px;
+}
+
+/* Dialoge: passen vollständig in 350 px Höhe, der Inhalt scrollt intern */
+.gs-ui[data-device='phone'] .overlay {
+  padding: 6px;
+}
+.gs-ui[data-device='phone'] .dlg-head {
+  padding: 3px 4px 3px 14px;
+}
+.gs-ui[data-device='phone'] .dlg-head h2 {
+  font-size: 15px;
+}
+.gs-ui[data-device='phone'] .dlg-body {
+  padding: 10px 14px;
+}
+/* Fußzeile mit den Haupt-Buttons bleibt beim Scrollen sichtbar */
+.gs-ui[data-device='phone'] .dlg-foot {
+  position: sticky;
+  bottom: -10px;
+  z-index: 2;
+  flex: none;
+  margin: 8px -14px -10px;
+  padding: 6px 14px 8px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 var(--radius) var(--radius);
+  background: #0a0f1f;
+}
+.gs-ui[data-device='phone'] .field {
+  margin-bottom: 8px;
+  gap: 3px;
+}
+.gs-ui[data-device='phone'] .dialog {
+  width: 480px;
+}
+.gs-ui[data-device='phone'] .dialog-wide {
+  width: 700px;
+}
+.gs-ui[data-device='phone'] .dialog-pause {
+  width: 520px;
+}
+.gs-ui[data-device='phone'] .pause-nav {
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 8px;
+  margin-bottom: 6px;
+}
+.gs-ui[data-device='phone'] .pause-nav .btn-menu {
+  padding: 4px 10px;
+  font-size: 13.5px;
+}
+.gs-ui[data-device='phone'] .pause-nav .btn-menu:first-child {
+  grid-column: 1 / 3;
+}
+.gs-ui[data-device='phone'] .pause-note {
+  margin: 0;
+}
+.gs-ui[data-device='phone'] .set-body {
+  max-height: none;
+}
+.gs-ui[data-device='phone'] .set-row {
+  padding: 6px 0;
+}
+.gs-ui[data-device='phone'] .slots {
+  max-height: none;
+}
+.gs-ui[data-device='phone'] .txt-save {
+  height: 120px;
+  min-height: 70px;
+}
+.gs-ui[data-device='phone'] .keys dl {
+  gap: 2px 16px;
+}
+.gs-ui[data-device='phone'] .enc {
+  grid-template-columns: 80px 1fr;
+  gap: 10px;
+}
+.gs-ui[data-device='phone'] .enc .portrait-lg {
+  width: 76px;
+  height: 76px;
+}
+.gs-ui[data-device='phone'] .enc-who b {
+  font-size: 12px;
+}
+.gs-ui[data-device='phone'] .enc-quote {
+  padding: 5px 10px;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+}
+.gs-ui[data-device='phone'] .enc-facts {
+  gap: 0 16px;
+}
+.gs-ui[data-device='phone'] .enc-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 8px;
+}
+.gs-ui[data-device='phone'] .btn-choice {
+  padding: 6px 10px;
+  align-content: start;
+}
+.gs-ui[data-device='phone'] .btn-choice b {
+  font-size: 13px;
+}
+
+/* Hauptmenü */
+.gs-ui[data-device='phone'] .menu {
+  grid-template-columns: minmax(200px, 250px) minmax(0, 1fr);
+  gap: 0 12px;
+  padding: 8px 18px 4px;
+}
+.gs-ui[data-device='phone'] .menu-col {
+  gap: 7px;
+}
+.gs-ui[data-device='phone'] .logo {
+  gap: 3px;
+}
+.gs-ui[data-device='phone'] .logo-emblem {
+  width: 40px;
+  height: 40px;
+}
+.gs-ui[data-device='phone'] .logo-a {
+  font-size: 19px;
+}
+.gs-ui[data-device='phone'] .logo-b {
+  font-size: 25px;
+}
+.gs-ui[data-device='phone'] .tagline {
+  font-size: 11.5px;
+}
+.gs-ui[data-device='phone'] .menu-nav {
+  gap: 6px;
+  width: 240px;
+}
+.gs-ui[data-device='phone'] .menu-nav .btn-menu {
+  min-height: var(--tt, 36px);
+  padding: 4px 14px;
+  font-size: 14px;
+}
+.gs-ui[data-device='phone'] .menu-foot {
+  padding-top: 2px;
+  font-size: 10.5px;
+}
+.gs-ui[data-device='phone'] .notice {
+  max-width: 240px;
+  padding: 3px 8px;
+  font-size: 10.5px;
+  line-height: 1.25;
+}
+/* Menü-Dialoge legen sich über das ganze Menü statt in die schmale rechte Spalte */
+.gs-ui[data-device='phone'] .menu-dialog {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  padding: 6px;
+  background: rgba(3, 5, 12, 0.66);
+  box-shadow: 0 0 0 240px rgba(3, 5, 12, 0.66);
+  pointer-events: auto;
+}
+
+/* mittlere Breiten: Großmeldungen/Toasts zwischen linkem Panel und rechter Spalte statt Bildschirmmitte */
+@container (max-width: 1420px) {
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-left]:not([data-left='']) .banner,
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-left]:not([data-left='']) .banner-low {
+    left: 496px;
+    right: 352px;
+    width: auto;
+    max-width: 470px;
+    margin: 0 auto;
+    transform: none;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-left]:not([data-left='']) .region-toasts {
+    left: 496px;
+    right: 352px;
+  }
+}
+
+/* ------------------------------------------------------------------ Tablet / schmale Fenster (nicht Smartphone):
+   Großmeldungen und Toasts sitzen in der freien Mitte über der 3D-Welt statt über den Panels. */
+@container (max-width: 1240px) {
+  .gs-ui[data-screen='game']:not([data-device='phone']) .banner,
+  .gs-ui[data-screen='game']:not([data-device='phone']) .banner-low {
+    left: 104px;
+    right: 320px;
+    width: auto;
+    max-width: 470px;
+    margin: 0 auto;
+    transform: none;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-left]:not([data-left='']) .banner,
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-left]:not([data-left='']) .banner-low {
+    left: 452px;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone']) .region-toasts {
+    left: 104px;
+    right: 320px;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-left]:not([data-left='']) .region-toasts {
+    left: 452px;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone']) .toasts {
+    max-width: 100%;
+    padding: 0 6px;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone']) .toast {
+    max-width: 100%;
+  }
+  /* die Großmeldung bricht hier eher um und wird höher */
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-banner='1'] .region-toasts {
+    top: 204px;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone']) .banner + .banner-low {
+    top: 200px;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone']):has(.banner + .banner-low) .region-toasts {
+    top: 304px;
+  }
+}
+/* sehr enge Mitte (z. B. Tablet bei 130 % mit offenem Panel): Meldungen und Bau-Leiste verdichten */
+@container (max-width: 1080px) {
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-left]:not([data-left='']) .banner {
+    padding: 8px 10px;
+    gap: 8px;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-left]:not([data-left='']) .banner .portrait-md {
+    display: none;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-left]:not([data-left='']) .banner b {
+    font-size: 13.5px;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-left]:not([data-left='']) .banner span {
+    font-size: 12px;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-left]:not([data-left='']) .banner + .banner-low {
+    top: 216px;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-left]:not([data-left=''])[data-banner='1'] .region-toasts {
+    top: auto;
+    bottom: 118px;
+  }
+  .gs-ui[data-screen='game']:not([data-device='phone'])[data-left]:not([data-left='']) .toast {
+    font-size: 12px;
+    padding: 6px 10px;
+  }
+  .gs-ui:not([data-device='phone'])[data-left]:not([data-left='']) .mode-hint {
+    gap: 6px;
+    padding: 5px 6px;
+  }
+  .gs-ui:not([data-device='phone'])[data-left]:not([data-left='']) .mode-hint .mh-btn span,
+  .gs-ui:not([data-device='phone'])[data-left]:not([data-left='']) .mode-hint .mh-rot,
+  .gs-ui:not([data-device='phone'])[data-left]:not([data-left='']) .mode-hint .mh-title {
+    display: none;
+  }
+  .gs-ui:not([data-device='phone'])[data-left]:not([data-left='']) .mode-hint .mh-name b {
+    display: block;
+    max-width: 84px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 

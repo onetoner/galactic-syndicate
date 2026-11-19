@@ -1,8 +1,8 @@
 import { BUILDINGS, PLAYER_PORTRAIT_ID, POLICE_COMMANDER, POLICE_PORTRAIT_ID, TICKS_PER_SECOND } from '../../core';
 import type { Ui, LeftPanel, GameView } from '../Ui';
 import { bar, btn, clock, cr, esc, input, pct } from '../dom';
-import { portrait, uiIcon } from '../icons';
-import { dialog, loadBody } from './menu';
+import { buildingIcon, portrait, uiIcon } from '../icons';
+import { dialog, importTextBody, loadBody } from './menu';
 import { settingsBody } from './settings';
 
 // ---------------------------------------------------------------- obere Leiste
@@ -30,14 +30,14 @@ export function renderTopbar(ui: Ui): string {
 
   return (
     `<header class="topbar glass" data-testid="hud">` +
-    `<div class="tb-id" data-tip="${esc(rank.description)}">${portrait(PLAYER_PORTRAIT_ID, st.playerName, 'portrait-sm')}` +
+    `<div class="tb-id" data-testid="hud-id" data-tip="${esc(`${st.syndicateName} · Rang „${rank.name}": ${rank.description} (${nextText})`)}">${portrait(PLAYER_PORTRAIT_ID, st.playerName, 'portrait-sm')}` +
     `<div class="tb-names"><b data-testid="hud-syndicate">${esc(st.syndicateName)}</b>` +
     `<span data-testid="hud-rank">${esc(rank.name)}</span>${bar(rank.progress, 'bar-rank', nextText)}</div></div>` +
     `<div class="tb-stats">` +
     `<div class="stat stat-credits" data-tip="Dein Bargeld"><span>Credits</span><b data-credits data-testid="hud-credits">${Math.round(ui.creditsShown).toLocaleString('de-DE')} ₡</b></div>` +
     `<div class="stat stat-heat ${heatCls}" data-testid="hud-heat" data-tip="Fahndungslevel. Ab 60 drohen Razzien, außerdem steigt das Kontrollrisiko im All.">` +
     `<span>${uiIcon('heat')} Heat</span><b>${Math.round(heat)}</b>${bar(heat / 100, `bar-heat ${heatCls}`, 'Heat')}</div>` +
-    (heat >= 10 ? btn({ label: 'Beamte schmieren', action: 'bribe-officials', cls: 'btn-sm btn-gold', tip: `Senkt den Heat um 40. Kosten: ${cr(bribeCost)}`, disabled: st.credits < bribeCost }) : '') +
+    (heat >= 10 ? btn({ label: `<span class="lbl-long">Beamte schmieren</span><span class="lbl-short">Schmieren</span>`, html: true, action: 'bribe-officials', cls: 'btn-sm btn-gold btn-bribe', tip: `Senkt den Heat um 40. Kosten: ${cr(bribeCost)}`, disabled: st.credits < bribeCost }) : '') +
     `<div class="stat stat-time" data-tip="Spielzeit"><span>Zeit</span><b data-testid="hud-time">${clock(g.timeSeconds)}</b></div>` +
     (ui.settings.get().graphics.showFps ? `<div class="stat stat-fps" data-testid="hud-fps"><span>FPS</span><b>${Math.round(ui.fps)}</b></div>` : '') +
     `</div>` +
@@ -62,11 +62,16 @@ export function renderNav(ui: Ui): string {
     ['systems', 'Systeme', 'systems', 'Bekannte Sonnensysteme'],
     ['syndicates', 'Syndikate', 'syndicates', 'Rangliste, eigene Systeme, Statistik'],
   ];
+  // Smartphone: rechte Spalte (Raster/Inspektor, Sektoren, System) nur auf Wunsch – per CSS nur dort sichtbar
+  const view = ui.s.view;
+  const ctxLabel = view === 'sector' ? 'Raster' : view === 'planet' ? 'Sektoren' : 'System';
+  const ctxTip = view === 'sector' ? 'Rasterkarte und Gebäude-Inspektor ein-/ausblenden' : view === 'planet' ? 'Sektoren-Übersicht ein-/ausblenden' : 'System-Details ein-/ausblenden';
   return (
     `<nav class="rail glass" aria-label="Hauptnavigation">` +
     items
       .map(([p, label, ic, tip]) => btn({ label: `${uiIcon(ic)}<span>${label}</span>`, html: true, action: 'nav', data: { panel: p }, active: ui.s.leftPanel === p, cls: 'rail-btn', tip }))
       .join('') +
+    btn({ label: `${uiIcon('side')}<span>${ctxLabel}</span>`, html: true, action: 'right-toggle', active: ui.s.rightOpen, cls: 'rail-btn rail-ctx', tip: ctxTip, testid: 'right-toggle' }) +
     `</nav>`
   );
 }
@@ -105,9 +110,21 @@ export function renderBottom(ui: Ui): string {
 
   let hint = '';
   if (s.placing) {
-    hint = `<div class="mode-hint glass" data-testid="mode-hint"><b>Bau-Modus: ${esc(BUILDINGS[s.placing].name)}</b><span>Feld anklicken zum Platzieren · <kbd>R</kbd> drehen · <kbd>Esc</kbd> beenden</span>${btn({ label: `Drehen (${s.placeRot * 90}°)`, action: 'place-rotate', cls: 'btn-sm', tip: 'Um 90° drehen (R)' })}${btn({ label: 'Beenden', action: 'cancel-modes', cls: 'btn-sm btn-ghost' })}</div>`;
+    const def = BUILDINGS[s.placing];
+    const poor = g.state.credits < def.cost;
+    hint =
+      `<div class="mode-hint glass" data-testid="mode-hint">` +
+      btn({ label: `${buildingIcon(s.placing)}<span class="mh-name"><b>${esc(def.name)}</b><small class="${poor ? 'bad-text' : ''}">${cr(def.cost)}</small></span>`, html: true, action: 'build-open', cls: 'btn-sm mh-pick', tip: 'Anderes Gebäude wählen', testid: 'mode-building' }) +
+      `<span class="mh-text"><span class="fine-only">Feld anklicken zum Platzieren · <kbd>R</kbd> drehen · <kbd>Esc</kbd> beenden</span><span class="coarse-only">Freies Feld antippen</span></span>` +
+      btn({ label: `${uiIcon('rotate')}<span>Drehen</span><small class="mh-rot">${s.placeRot * 90}°</small>`, html: true, action: 'place-rotate', cls: 'btn-sm mh-btn', tip: 'Um 90° drehen (R)' }) +
+      btn({ label: `${uiIcon('close')}<span>Abbrechen</span>`, html: true, action: 'cancel-modes', cls: 'btn-sm btn-danger mh-btn', tip: 'Bau-Modus beenden (Esc)' }) +
+      `</div>`;
   } else if (s.demolish) {
-    hint = `<div class="mode-hint glass is-danger" data-testid="mode-hint"><b>Abriss-Modus</b><span>Gebäude anklicken · 50 % Erstattung · <kbd>Esc</kbd> beenden</span>${btn({ label: 'Beenden', action: 'cancel-modes', cls: 'btn-sm btn-ghost' })}</div>`;
+    hint =
+      `<div class="mode-hint glass is-danger" data-testid="mode-hint"><b class="mh-title">Abriss-Modus</b>` +
+      `<span class="mh-text"><span class="fine-only">Gebäude anklicken · 50 % Erstattung · <kbd>Esc</kbd> beenden</span><span class="coarse-only">Gebäude antippen · 50 % Erstattung</span></span>` +
+      btn({ label: `${uiIcon('close')}<span>Abriss beenden</span>`, html: true, action: 'cancel-modes', cls: 'btn-sm btn-danger mh-btn', tip: 'Abriss-Modus beenden (Esc)' }) +
+      `</div>`;
   }
 
   let help = '';
@@ -136,7 +153,7 @@ export function renderBottom(ui: Ui): string {
     `<div class="log-bar">${btn({ label: `${uiIcon('log')}<span>Ereignisse</span>`, html: true, action: 'log-toggle', cls: 'btn-sm btn-ghost', active: s.logOpen, tip: 'Ereignis-Log auf-/zuklappen' })}` +
     `<span class="log-last log-${last ? last.kind : 'info'}" data-testid="log-last">${last ? esc(last.text) : 'Noch nichts passiert.'}</span></div></div>` +
     btn({
-      label: `${uiIcon('job')}<span>${cooldown > 0 ? `Gelegenheitsjob (${Math.ceil(cooldown)} s)` : 'Gelegenheitsjob +25 ₡'}</span>`,
+      label: `${uiIcon('job')}<span>Gelegenheitsjob </span><b class="job-val">${cooldown > 0 ? `${Math.ceil(cooldown)} s` : '+25 ₡'}</b>`,
       html: true,
       action: 'hustle',
       cls: 'btn-job glass',
@@ -161,6 +178,17 @@ function pauseMenu(ui: Ui): string {
   const d = ui.s.pauseDialog;
   if (d === 'settings') return dialog('Einstellungen', settingsBody(ui), 'dialog-settings', true);
   if (d === 'load') return dialog('Spielstand laden', loadBody(ui), 'dialog-load', true);
+  if (d === 'import-text') return dialog('Spielstand aus Text importieren', importTextBody(ui), 'dialog-import-text', true);
+  if (d === 'export-text') {
+    const body =
+      `<p class="hint">Dein kompletter Spielstand als Text. Kopiere oder teile ihn (Notiz, Mail an dich selbst) – über „Aus Text importieren" lädst du ihn auf jedem Gerät wieder.</p>` +
+      `<textarea class="inp txt-save" readonly data-testid="export-textarea" aria-label="Spielstand als Text" spellcheck="false">${esc(ui.exportText)}</textarea>` +
+      `<div class="dlg-foot">${btn({ label: 'Schließen', action: 'dialog-close', cls: 'btn-ghost', testid: 'export-text-close' })}<span class="spacer"></span>` +
+      (ui.canShare() ? btn({ label: 'Teilen …', action: 'text-share' }) : '') +
+      btn({ label: 'Kopieren', action: 'text-copy', cls: 'btn-primary' }) +
+      `</div>`;
+    return dialog('Spielstand als Text', body, 'dialog-export-text', true);
+  }
   if (d === 'save') {
     const slots = ui.game.listSlots().filter((s) => s.slot !== 'autosave');
     const body =
@@ -175,11 +203,15 @@ function pauseMenu(ui: Ui): string {
     btn({ label: 'Weiter', action: 'pause-close', cls: 'btn-menu btn-primary', testid: 'pause-resume' }) +
     btn({ label: 'Speichern …', action: 'pause-dialog', data: { dialog: 'save' }, cls: 'btn-menu' }) +
     btn({ label: 'Laden …', action: 'pause-dialog', data: { dialog: 'load' }, cls: 'btn-menu' }) +
-    btn({ label: 'Als JSON exportieren', action: 'export-save', cls: 'btn-menu' }) +
-    btn({ label: 'JSON importieren …', action: 'import-pick', cls: 'btn-menu', testid: 'pause-import' }) +
+    (ui.touchMode
+      ? btn({ label: 'Spielstand als Text …', action: 'export-text-open', cls: 'btn-menu', tip: 'Spielstand kopieren oder teilen' }) +
+        btn({ label: 'Aus Text importieren …', action: 'import-text-open', cls: 'btn-menu', tip: 'Einen kopierten Spielstand einfügen' })
+      : '') +
+    btn({ label: `<span class="lbl-long">Als JSON exportieren</span><span class="lbl-short">JSON-Datei exportieren</span>`, html: true, action: 'export-save', cls: 'btn-menu' }) +
+    btn({ label: `<span class="lbl-long">JSON importieren …</span><span class="lbl-short">JSON-Datei importieren …</span>`, html: true, action: 'import-pick', cls: 'btn-menu', testid: 'pause-import' }) +
     btn({ label: 'Einstellungen', action: 'pause-dialog', data: { dialog: 'settings' }, cls: 'btn-menu' }) +
     btn({ label: 'Zum Hauptmenü', action: 'to-menu', cls: 'btn-menu btn-danger' }) +
-    `</nav><p class="hint">Das Spiel ist pausiert. Beim Verlassen wird automatisch in „Autosave" gespeichert.</p>`;
+    `</nav><p class="hint pause-note">Das Spiel ist pausiert. Beim Verlassen wird automatisch in „Autosave" gespeichert.</p>`;
   return dialog('Pause', body, 'dialog-pause', false, false);
 }
 
