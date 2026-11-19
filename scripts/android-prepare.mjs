@@ -1,6 +1,7 @@
 // Passt das von `npx cap add android` erzeugte Android-Projekt an:
 //  - Querformat (sensorLandscape)
 //  - Vollbild/Immersive-Modus, Bildschirm bleibt an, Display-Aussparung wird mitgenutzt
+//  - Zurück-Taste wird an das Spiel weitergereicht (window.__gsBack)
 //  - versionName aus package.json, versionCode aus der CI-Laufnummer
 // Aufruf: node scripts/android-prepare.mjs   (nach `npx cap add android`, vor `npx cap sync android`)
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
@@ -42,6 +43,7 @@ if (activities.length !== 1) {
 import android.os.Build;
 import android.os.Bundle;
 import android.view.WindowManager;
+import androidx.activity.OnBackPressedCallback;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
@@ -59,6 +61,21 @@ public class MainActivity extends BridgeActivity {
             getWindow().setAttributes(lp);
         }
         hideSystemBars();
+        // Zurück-Taste: erst das Spiel fragen (schließt Bau-Modus, Panel, Dialog bzw. öffnet das Pausemenü);
+        // gibt es nichts zu schließen (Hauptmenü), wandert die App in den Hintergrund.
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                if (getBridge() == null || getBridge().getWebView() == null) {
+                    moveTaskToBack(true);
+                    return;
+                }
+                getBridge().getWebView().evaluateJavascript(
+                    "(function(){try{return window.__gsBack?!!window.__gsBack():false}catch(e){return false}})()",
+                    value -> { if (!"true".equals(value)) moveTaskToBack(true); }
+                );
+            }
+        });
     }
 
     @Override
@@ -84,6 +101,7 @@ public class MainActivity extends BridgeActivity {
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
+import androidx.activity.OnBackPressedCallback
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -100,6 +118,15 @@ class MainActivity : BridgeActivity() {
             window.attributes = lp
         }
         hideSystemBars()
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                val webView = bridge?.webView
+                if (webView == null) { moveTaskToBack(true); return }
+                webView.evaluateJavascript("(function(){try{return window.__gsBack?!!window.__gsBack():false}catch(e){return false}})()") { value ->
+                    if (value != "true") moveTaskToBack(true)
+                }
+            }
+        })
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

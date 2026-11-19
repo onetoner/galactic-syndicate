@@ -146,6 +146,7 @@ export class Ui {
   private pressStart = 0;
   private pressEl: HTMLElement | null = null;
   private suppressClickUntil = 0;
+  private pressTipShown = false;
 
   constructor(deps: UiDeps) {
     this.root = deps.root;
@@ -315,6 +316,8 @@ export class Ui {
         // Gedrückt halten zeigt die Info eines Elements (Ersatz für Hover-Tooltips)
         const tipEl = (ev.target as HTMLElement | null)?.closest?.('[data-tip]') as HTMLElement | null;
         this.clearPress();
+        this.pressEl = null;
+        this.pressTipShown = false;
         if (tipEl) {
           this.pressX = ev.clientX;
           this.pressY = ev.clientY;
@@ -323,23 +326,37 @@ export class Ui {
           this.pressTimer = setTimeout(() => {
             this.pressTimer = null;
             if (!tipEl.isConnected) return;
-            this.suppressClickUntil = performance.now() + 1500;
+            // Nur die Info zeigen. Ob der Klick unterdrückt wird, entscheidet erst das Loslassen anhand der
+            // echten Haltedauer – ruckelt das Gerät, läuft dieser Timer sonst auch bei einem kurzen Tipp ab.
+            this.pressTipShown = true;
             this.showTipFor(tipEl, 3200);
           }, 480);
         }
       }
     }, true);
     root.addEventListener('pointermove', (ev) => {
-      if (this.pressTimer && Math.hypot(ev.clientX - this.pressX, ev.clientY - this.pressY) > 10) this.clearPress();
+      if (this.pressTimer && Math.hypot(ev.clientX - this.pressX, ev.clientY - this.pressY) > 10) {
+        // Finger bewegt sich: kein „gedrückt halten"
+        this.clearPress();
+        this.pressEl = null;
+      }
     }, true);
     const up = (ev?: Event): void => {
       // Ruckelt das Gerät, kann der Halte-Timer noch ausstehen, obwohl lange genug gedrückt wurde:
       // dann zählt die gemessene Haltedauer (Zeitstempel der Ereignisse), nicht der Timer.
-      const held = this.pressTimer !== null && this.pressEl !== null && ev instanceof PointerEvent && ev.type === 'pointerup' && ev.timeStamp - this.pressStart >= 480;
-      if (held && this.pressEl && this.pressEl.isConnected) {
-        this.suppressClickUntil = performance.now() + 1500;
-        this.showTipFor(this.pressEl, 3200);
+      const isUp = ev instanceof PointerEvent && ev.type === 'pointerup';
+      // Maßgeblich ist die Zeit zwischen den Eingabe-Ereignissen selbst (timeStamp), nicht der Zeitpunkt ihrer Verarbeitung.
+      const heldMs = isUp ? ev.timeStamp - this.pressStart : this.pressTipShown ? 480 : 0;
+      if (this.pressEl !== null) {
+        if (heldMs >= 450) {
+          this.suppressClickUntil = performance.now() + 1500;
+          if (!this.pressTipShown && this.pressEl.isConnected) this.showTipFor(this.pressEl, 3200);
+        } else if (this.pressTipShown) {
+          // kurzer Tipp, aber der Timer lief wegen eines Rucklers trotzdem ab: Info wieder weg, Klick zählt
+          this.hideTip();
+        }
       }
+      this.pressTipShown = false;
       this.pressEl = null;
       this.clearPress();
       // nach dem Loslassen bleibt die Sperre nur kurz bestehen (das zugehörige click-Ereignis folgt sofort)

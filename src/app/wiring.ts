@@ -271,6 +271,18 @@ export function wire(ctx: WiringContext): () => void {
       ui.afterRender = null;
     });
   }
+  // Android-App (Capacitor): die Hülle fragt bei der Zurück-Taste hier nach. true = im Spiel behandelt
+  // (wirkt wie Esc), false = nichts zu schließen (Hauptmenü) -> die App geht in den Hintergrund.
+  const nativeBack = (): boolean => {
+    if (!wantGuard()) return false;
+    ui.escape();
+    ui.invalidate();
+    return true;
+  };
+  (window as unknown as { __gsBack?: () => boolean }).__gsBack = nativeBack;
+  offs.push(() => {
+    delete (window as unknown as { __gsBack?: () => boolean }).__gsBack;
+  });
 
   return () => {
     for (const off of offs) off();

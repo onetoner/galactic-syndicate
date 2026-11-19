@@ -1,7 +1,7 @@
 {
   "name": "galactic-syndicate",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Galactic Syndicate – 3D-Wirtschafts-, Automatisierungs- und Weltraum-Mafia-Simulation (Vite + TypeScript + Three.js)",
   "type": "module",
   "scripts": {

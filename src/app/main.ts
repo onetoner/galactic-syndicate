@@ -6,7 +6,7 @@ import type { WorldView } from '../graphics/WorldView';
 import { Ui } from '../ui/Ui';
 import { wire } from './wiring';
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 const MENU_BACKGROUND = './assets/ui/menu_background.jpg';
 
 /** Menü-Hintergrund (Higgsfield-Artwork) erst setzen, wenn er wirklich geladen ist – sonst bleibt der CSS-Verlauf. */
